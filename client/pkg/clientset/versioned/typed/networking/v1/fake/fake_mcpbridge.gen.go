@@ -77,6 +77,7 @@ func (c *FakeMcpBridges) List(ctx context.Context, opts metav1.ListOptions) (res
 func (c *FakeMcpBridges) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
 		InvokesWatch(testing.NewWatchAction(mcpbridgesResource, c.ns, opts))
+
 }
 
 // Create takes the representation of a mcpBridge and creates it.  Returns the server's representation of the mcpBridge, and an error, if there is any.

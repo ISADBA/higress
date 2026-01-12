@@ -77,6 +77,7 @@ func (c *FakeWasmPlugins) List(ctx context.Context, opts v1.ListOptions) (result
 func (c *FakeWasmPlugins) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
 		InvokesWatch(testing.NewWatchAction(wasmpluginsResource, c.ns, opts))
+
 }
 
 // Create takes the representation of a wasmPlugin and creates it.  Returns the server's representation of the wasmPlugin, and an error, if there is any.
