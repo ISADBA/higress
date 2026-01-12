@@ -1,0 +1,103 @@
+# Consumer 级别 WASM 插件配置示例
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-rate-limit
+  namespace: higress-system
+spec:
+  phase: AUTHN
+  priority: 800  # 比 ROUTE 级别插件优先级高
+  matchRules:
+  # Consumer 规则 1: 高级用户配置
+  - consumer:
+    - "premium-user-123"
+    - "enterprise-user-456"
+    config:
+      rateLimit:
+        requests: 1000
+        window: 60s
+        burst: 100
+      ipWhitelist:
+        - "192.168.1.0/24"
+        - "10.0.0.0/8"
+  
+  # Consumer 规则 2: 基础用户配置
+  - consumer:
+    - "basic-user-789"
+    - "trial-user-001"
+    config:
+      rateLimit:
+        requests: 100
+        window: 60s
+        burst: 10
+      ipWhitelist:
+        - "192.168.1.100"
+  
+  # 全局默认配置（当没有匹配的 consumer 时使用）
+  rateLimit:
+    requests: 50
+    window: 60s
+    burst: 5
+
+---
+# Consumer 级别 IP 白名单插件配置示例
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-ip-restriction
+  namespace: higress-system
+spec:
+  phase: AUTHN
+  priority: 900  # 更高优先级
+  matchRules:
+  # VIP Consumer 无 IP 限制
+  - consumer:
+    - "vip-user-001"
+    config:
+      allowAll: true
+  
+  # 普通 Consumer IP 白名单
+  - consumer:
+    - "regular-user-002"
+    - "regular-user-003"
+    config:
+      allowedIPs:
+        - "203.0.113.0/24"
+        - "198.51.100.0/24"
+  
+  # 默认拒绝所有（严格模式）
+  allowedIPs: []
+
+---
+# Consumer 级别自定义响应插件配置示例
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-custom-response
+  namespace: higress-system
+spec:
+  phase: AUTHN
+  priority: 700
+  matchRules:
+  # 特定 Consumer 的自定义响应
+  - consumer:
+    - "api-partner-001"
+    config:
+      customHeaders:
+        "X-Partner-ID": "partner-001"
+        "X-Rate-Limit": "10000"
+      responseModification:
+        addHeaders:
+          "X-Custom-Response": "partner-api"
+  
+  # 内部 Consumer 的响应修改
+  - consumer:
+    - "internal-service-001"
+    - "internal-service-002"  
+    config:
+      customHeaders:
+        "X-Internal-Service": "true"
+        "X-Debug-Mode": "enabled"
+      responseModification:
+        addHeaders:
+          "X-Internal-Response": "debug-enabled"

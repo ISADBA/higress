@@ -124,6 +124,8 @@ message MatchRule {
   repeated string service = 5;
   // Route type for this match rule, defaults to HTTP
   RouteType route_type = 6;
+  // Consumer matching rules for consumer-level plugin configuration
+  repeated string consumer = 7;
 }
 
 // Route type for matching rules.

@@ -1,0 +1,44 @@
+{
+  "_plugin_id_": "consumer-rate-limit-001",
+  "_rules_": [
+    {
+      "_match_consumer_": ["premium-user-123", "enterprise-user-456"],
+      "rateLimit": {
+        "requests": 1000,
+        "window": "60s",
+        "burst": 100
+      },
+      "ipWhitelist": ["192.168.1.0/24", "10.0.0.0/8"]
+    },
+    {
+      "_match_consumer_": ["basic-user-789", "trial-user-001"],
+      "rateLimit": {
+        "requests": 100,
+        "window": "60s", 
+        "burst": 10
+      },
+      "ipWhitelist": ["192.168.1.100"]
+    },
+    {
+      "_match_route_": ["api-v1", "api-v2"],
+      "rateLimit": {
+        "requests": 200,
+        "window": "60s",
+        "burst": 20
+      }
+    },
+    {
+      "_match_domain_": ["api.example.com"],
+      "rateLimit": {
+        "requests": 500,
+        "window": "60s",
+        "burst": 50
+      }
+    }
+  ],
+  "rateLimit": {
+    "requests": 50,
+    "window": "60s",
+    "burst": 5
+  }
+}

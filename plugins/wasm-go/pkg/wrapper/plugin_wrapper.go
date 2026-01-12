@@ -37,6 +37,7 @@ const (
 	AILogKey           = "ai_log"
 	TraceSpanTagPrefix = "trace_span_tag."
 	PluginIDKey        = "_plugin_id_"
+	ConsumerContextKey = "consumer_name"
 )
 
 type HttpContext interface {
@@ -76,6 +77,10 @@ type HttpContext interface {
 	SetResponseBodyBufferLimit(byteSize uint32)
 	// Get contextId of HttpContext
 	GetContextId() uint32
+	// Extract consumer information from request
+	ExtractConsumer() string
+	// Store consumer information for plugin execution
+	StoreConsumerInfo(consumerName string)
 }
 
 type oldParseConfigFunc[PluginConfig any] func(json gjson.Result, config *PluginConfig, log Log) error
@@ -683,6 +688,13 @@ func (ctx *CommonHttpCtx[PluginConfig]) GetContextId() uint32 {
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	requestID, _ := proxywasm.GetHttpRequestHeader("x-request-id")
 	_ = proxywasm.SetProperty([]string{"x_request_id"}, []byte(requestID))
+
+	// Extract and store consumer information early in the request processing
+	consumer := ctx.ExtractConsumer()
+	if consumer != "" {
+		ctx.StoreConsumerInfo(consumer)
+	}
+
 	config, err := ctx.plugin.GetMatchConfig()
 	if err != nil {
 		ctx.plugin.vm.log.Errorf("get match config failed, err:%v", err)
@@ -788,4 +800,116 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpStreamDone() {
 		return
 	}
 	ctx.plugin.vm.onHttpStreamDone(ctx, *ctx.config)
+}
+
+// ExtractConsumer extracts consumer information from request headers
+func (ctx *CommonHttpCtx[PluginConfig]) ExtractConsumer() string {
+	// 1. Try to extract from X-Mse-Consumer header (set by authentication plugins)
+	if consumerName, err := proxywasm.GetHttpRequestHeader("X-Mse-Consumer"); err == nil && consumerName != "" {
+		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Mse-Consumer header: %s", consumerName)
+		return consumerName
+	}
+
+	// 2. Try to extract from X-Consumer-ID header (direct consumer identification)
+	if consumerID, err := proxywasm.GetHttpRequestHeader("X-Consumer-ID"); err == nil && consumerID != "" {
+		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Consumer-ID header: %s", consumerID)
+		return consumerID
+	}
+
+	// 3. Try to extract from X-Consumer-Name header (alternative consumer identification)
+	if consumerName, err := proxywasm.GetHttpRequestHeader("X-Consumer-Name"); err == nil && consumerName != "" {
+		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Consumer-Name header: %s", consumerName)
+		return consumerName
+	}
+
+	// 4. Try to extract from API Key header (X-API-Key)
+	if apiKey, err := proxywasm.GetHttpRequestHeader("X-API-Key"); err == nil && apiKey != "" {
+		// In a real implementation, this would lookup the consumer associated with the API key
+		// For now, we'll use the API key as a consumer identifier
+		ctx.plugin.vm.log.Debugf("Consumer extracted from X-API-Key header: %s", apiKey)
+		return apiKey
+	}
+
+	// 5. Try to extract from Authorization header (JWT or Basic Auth)
+	if authHeader, err := proxywasm.GetHttpRequestHeader("Authorization"); err == nil && authHeader != "" {
+		if consumer := ctx.extractConsumerFromAuth(authHeader); consumer != "" {
+			ctx.plugin.vm.log.Debugf("Consumer extracted from Authorization header: %s", consumer)
+			return consumer
+		}
+	}
+
+	// 6. Try to get from property set by authentication plugins
+	if consumerProperty, err := proxywasm.GetProperty([]string{ConsumerContextKey}); err == nil && len(consumerProperty) > 0 {
+		consumer := string(consumerProperty)
+		ctx.plugin.vm.log.Debugf("Consumer extracted from property: %s", consumer)
+		return consumer
+	}
+
+	// No consumer found
+	return ""
+}
+
+// extractConsumerFromAuth extracts consumer information from Authorization header
+func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromAuth(authHeader string) string {
+	// Handle JWT Bearer tokens
+	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		token := authHeader[7:]
+		return ctx.extractConsumerFromJWT(token)
+	}
+
+	// Handle Basic Auth
+	if len(authHeader) > 6 && authHeader[:6] == "Basic " {
+		// In a real implementation, this would decode the basic auth and lookup the consumer
+		// For now, we'll use a simplified approach
+		return ctx.extractConsumerFromBasicAuth(authHeader[6:])
+	}
+
+	return ""
+}
+
+// extractConsumerFromJWT extracts consumer information from JWT token
+func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromJWT(token string) string {
+	// This is a simplified implementation
+	// In a real implementation, you would:
+	// 1. Decode the JWT token
+	// 2. Extract the consumer_id or sub field
+	// 3. Validate the token signature
+
+	// For now, we'll just log that we received a JWT and return empty
+	// This should be implemented by authentication plugins that set the consumer property
+	ctx.plugin.vm.log.Debugf("JWT token received, consumer should be set by auth plugin")
+	return ""
+}
+
+// extractConsumerFromBasicAuth extracts consumer information from Basic Auth
+func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromBasicAuth(encodedAuth string) string {
+	// This is a simplified implementation
+	// In a real implementation, you would:
+	// 1. Decode the base64 encoded credentials
+	// 2. Lookup the consumer associated with the credentials
+
+	// For now, we'll just log that we received basic auth and return empty
+	// This should be implemented by authentication plugins that set the consumer property
+	ctx.plugin.vm.log.Debugf("Basic auth received, consumer should be set by auth plugin")
+	return ""
+}
+
+// StoreConsumerInfo stores consumer information for plugin execution
+func (ctx *CommonHttpCtx[PluginConfig]) StoreConsumerInfo(consumerName string) {
+	if consumerName == "" {
+		return
+	}
+
+	// Store in internal context for plugin logic
+	ctx.SetContext(ConsumerContextKey, consumerName)
+
+	// Store in user attributes for observability (logs and monitoring)
+	ctx.SetUserAttribute(ConsumerContextKey, consumerName)
+
+	// Set property for other plugins and the matching engine to use
+	if err := proxywasm.SetProperty([]string{ConsumerContextKey}, []byte(consumerName)); err != nil {
+		ctx.plugin.vm.log.Warnf("Failed to set consumer property: %v", err)
+	} else {
+		ctx.plugin.vm.log.Debugf("Consumer information stored: %s", consumerName)
+	}
 }

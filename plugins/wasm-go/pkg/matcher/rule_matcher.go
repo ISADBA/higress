@@ -31,6 +31,7 @@ const (
 	Host
 	Service
 	RoutePrefix
+	Consumer
 )
 
 type MatchType int
@@ -47,6 +48,7 @@ const (
 	MATCH_DOMAIN_KEY       = "_match_domain_"
 	MATCH_SERVICE_KEY      = "_match_service_"
 	MATCH_ROUTE_PREFIX_KEY = "_match_route_prefix_"
+	MATCH_CONSUMER_KEY     = "_match_consumer_"
 )
 
 type HostMatcher struct {
@@ -60,6 +62,7 @@ type RuleConfig[PluginConfig any] struct {
 	services     map[string]struct{}
 	routePrefixs map[string]struct{}
 	hosts        []HostMatcher
+	consumers    map[string]struct{}
 	config       PluginConfig
 }
 
@@ -70,6 +73,13 @@ type RuleMatcher[PluginConfig any] struct {
 }
 
 func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
+	// 获取 consumer 信息
+	consumerName, err := proxywasm.GetProperty([]string{"consumer_name"})
+	if err != nil && err != types.ErrorStatusNotFound {
+		return nil, err
+	}
+
+	// 获取其他匹配信息
 	host, err := proxywasm.GetHttpRequestHeader(":authority")
 	if err != nil {
 		return nil, err
@@ -82,20 +92,31 @@ func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
 	if err != nil && err != types.ErrorStatusNotFound {
 		return nil, err
 	}
+
+	// 按规则定义顺序匹配，Consumer 规则优先
 	for _, rule := range m.ruleConfig {
-		// category == Host
-		if rule.category == Host {
-			if m.hostMatch(rule, host) {
+		// 1. Consumer 匹配（如果存在 consumer 标识）
+		if rule.category == Consumer && string(consumerName) != "" {
+			if _, ok := rule.consumers[string(consumerName)]; ok {
 				return &rule.config, nil
 			}
 		}
-		// category == Route
+
+		// 2. Route 匹配
 		if rule.category == Route {
 			if _, ok := rule.routes[string(routeName)]; ok {
 				return &rule.config, nil
 			}
 		}
-		// category == RoutePrefix
+
+		// 3. Host/Domain 匹配
+		if rule.category == Host {
+			if m.hostMatch(rule, host) {
+				return &rule.config, nil
+			}
+		}
+
+		// 4. RoutePrefix 匹配
 		if rule.category == RoutePrefix {
 			for routePrefix := range rule.routePrefixs {
 				if strings.HasPrefix(string(routeName), routePrefix) {
@@ -103,11 +124,14 @@ func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
 				}
 			}
 		}
-		// category == Cluster
+
+		// 5. Service 匹配
 		if m.serviceMatch(rule, string(serviceName)) {
 			return &rule.config, nil
 		}
 	}
+
+	// 6. 返回全局配置或 nil
 	if m.hasGlobalConfig {
 		return &m.globalConfig, nil
 	}
@@ -163,14 +187,18 @@ func (m *RuleMatcher[PluginConfig]) ParseRuleConfig(config gjson.Result,
 		rule.hosts = m.parseHostMatchConfig(ruleJson)
 		rule.services = m.parseServiceMatchConfig(ruleJson)
 		rule.routePrefixs = m.parseRoutePrefixMatchConfig(ruleJson)
+		rule.consumers = m.parseConsumerMatchConfig(ruleJson)
 		noRoute := len(rule.routes) == 0
 		noHosts := len(rule.hosts) == 0
 		noService := len(rule.services) == 0
 		noRoutePrefix := len(rule.routePrefixs) == 0
-		if boolToInt(noRoute)+boolToInt(noService)+boolToInt(noHosts)+boolToInt(noRoutePrefix) != 3 {
-			return errors.New("there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration.")
+		noConsumer := len(rule.consumers) == 0
+		if boolToInt(noRoute)+boolToInt(noService)+boolToInt(noHosts)+boolToInt(noRoutePrefix)+boolToInt(noConsumer) != 4 {
+			return errors.New("there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration.")
 		}
-		if !noRoute {
+		if !noConsumer {
+			rule.category = Consumer
+		} else if !noRoute {
 			rule.category = Route
 		} else if !noHosts {
 			rule.category = Host
@@ -297,4 +325,16 @@ func (m RuleMatcher[PluginConfig]) serviceMatch(rule RuleConfig[PluginConfig], s
 		}
 	}
 	return false
+}
+
+func (m RuleMatcher[PluginConfig]) parseConsumerMatchConfig(config gjson.Result) map[string]struct{} {
+	keys := config.Get(MATCH_CONSUMER_KEY).Array()
+	consumers := make(map[string]struct{})
+	for _, item := range keys {
+		consumerName := item.String()
+		if consumerName != "" {
+			consumers[consumerName] = struct{}{}
+		}
+	}
+	return consumers
 }

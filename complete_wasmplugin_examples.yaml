@@ -1,0 +1,517 @@
+# Complete WasmPlugin Configuration Examples for Consumer Scope
+# This file demonstrates various consumer-level WASM plugin configurations
+
+---
+# Example 1: Consumer-Level Rate Limiting Plugin
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-rate-limit
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+spec:
+  phase: AUTHN
+  priority: 800  # Higher priority than ROUTE level (typically 700)
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/rate-limit:1.0.0
+  matchRules:
+  # Premium consumers get higher rate limits
+  - consumer:
+    - "premium-user-001"
+    - "premium-user-002"
+    - "enterprise-client-001"
+    config:
+      rateLimit:
+        requests: 10000
+        window: 60s
+        burst: 1000
+      quotaConfig:
+        dailyLimit: 1000000
+        monthlyLimit: 30000000
+  
+  # Standard consumers get moderate rate limits
+  - consumer:
+    - "standard-user-001"
+    - "standard-user-002"
+    - "api-partner-basic"
+    config:
+      rateLimit:
+        requests: 1000
+        window: 60s
+        burst: 100
+      quotaConfig:
+        dailyLimit: 100000
+        monthlyLimit: 3000000
+  
+  # Trial consumers get limited rate limits
+  - consumer:
+    - "trial-user-001"
+    - "trial-user-002"
+    - "demo-account"
+    config:
+      rateLimit:
+        requests: 100
+        window: 60s
+        burst: 10
+      quotaConfig:
+        dailyLimit: 1000
+        monthlyLimit: 30000
+  
+  # Route-level fallback for authenticated users without specific consumer config
+  - ingress:
+    - "api-gateway"
+    domain:
+    - "api.example.com"
+    config:
+      rateLimit:
+        requests: 200
+        window: 60s
+        burst: 20
+  
+  # Global default rate limit for all other requests
+  rateLimit:
+    requests: 50
+    window: 60s
+    burst: 5
+  quotaConfig:
+    dailyLimit: 1000
+    monthlyLimit: 30000
+
+---
+# Example 2: Consumer-Level IP Restriction Plugin
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-ip-restriction
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+spec:
+  phase: AUTHN
+  priority: 900  # Very high priority for security
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/ip-restriction:1.0.0
+  matchRules:
+  # VIP consumers have no IP restrictions
+  - consumer:
+    - "vip-enterprise-001"
+    - "trusted-partner-001"
+    config:
+      allowAll: true
+      logAccess: true
+  
+  # Corporate consumers restricted to office networks
+  - consumer:
+    - "corporate-user-001"
+    - "corporate-user-002"
+    - "internal-service-001"
+    config:
+      allowedIPs:
+        - "192.168.0.0/16"    # Corporate network
+        - "10.0.0.0/8"        # Internal network
+        - "203.0.113.0/24"    # Office public IP range
+      denyMessage: "Access denied: Corporate users must connect from office network"
+      logDeniedRequests: true
+  
+  # Partner consumers restricted to specific IP ranges
+  - consumer:
+    - "api-partner-001"
+    - "integration-partner-002"
+    config:
+      allowedIPs:
+        - "198.51.100.0/24"   # Partner network 1
+        - "203.0.113.100/32"  # Partner specific IP
+      denyMessage: "Access denied: Partner access restricted to registered IPs"
+      logDeniedRequests: true
+  
+  # Mobile app consumers (more flexible IP restrictions)
+  - consumer:
+    - "mobile-app-user-001"
+    - "mobile-app-user-002"
+    config:
+      allowedCountries:
+        - "US"
+        - "CA"
+        - "GB"
+        - "DE"
+        - "JP"
+      denyMessage: "Access denied: Service not available in your region"
+  
+  # Default: Deny all for security (strict mode)
+  allowedIPs: []
+  denyMessage: "Access denied: IP not in whitelist"
+  logDeniedRequests: true
+
+---
+# Example 3: Consumer-Level Custom Response Plugin
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-custom-response
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+spec:
+  phase: AUTHN
+  priority: 700
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/custom-response:1.0.0
+  matchRules:
+  # API partners get custom branding and headers
+  - consumer:
+    - "api-partner-001"
+    - "integration-partner-001"
+    config:
+      customHeaders:
+        "X-Partner-ID": "partner-001"
+        "X-API-Version": "v2.1"
+        "X-Rate-Limit-Remaining": "dynamic"
+        "X-Partner-Tier": "premium"
+      responseModification:
+        addHeaders:
+          "X-Custom-Response": "partner-api"
+          "X-Support-Contact": "partner-support@example.com"
+        removeHeaders:
+          - "Server"
+          - "X-Powered-By"
+      corsConfig:
+        allowOrigins:
+          - "https://partner-001.example.com"
+          - "https://app.partner-001.com"
+        allowMethods:
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "DELETE"
+        allowHeaders:
+          - "Authorization"
+          - "Content-Type"
+          - "X-API-Key"
+  
+  # Internal services get debug headers
+  - consumer:
+    - "internal-service-001"
+    - "internal-service-002"
+    - "monitoring-service"
+    config:
+      customHeaders:
+        "X-Internal-Service": "true"
+        "X-Debug-Mode": "enabled"
+        "X-Trace-ID": "dynamic"
+      responseModification:
+        addHeaders:
+          "X-Internal-Response": "debug-enabled"
+          "X-Request-ID": "dynamic"
+          "X-Processing-Time": "dynamic"
+      debugMode: true
+  
+  # Mobile app consumers get mobile-optimized responses
+  - consumer:
+    - "mobile-app-ios"
+    - "mobile-app-android"
+    config:
+      customHeaders:
+        "X-Mobile-App": "true"
+        "X-App-Version": "dynamic"
+        "Cache-Control": "public, max-age=300"
+      responseModification:
+        addHeaders:
+          "X-Mobile-Optimized": "true"
+          "X-Compression": "gzip"
+        compressResponse: true
+      mobileOptimizations:
+        enableCompression: true
+        minifyJson: true
+        removeWhitespace: true
+
+---
+# Example 4: Consumer-Level Authentication Plugin
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-auth
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+spec:
+  phase: AUTHN
+  priority: 1000  # Highest priority for authentication
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/jwt-auth:1.0.0
+  matchRules:
+  # Enterprise consumers use specific JWT configuration
+  - consumer:
+    - "enterprise-client-001"
+    - "enterprise-client-002"
+    config:
+      jwtAuth:
+        issuer: "https://auth.enterprise.example.com"
+        audience: "enterprise-api"
+        jwksUri: "https://auth.enterprise.example.com/.well-known/jwks.json"
+        tokenHeader: "Authorization"
+        tokenPrefix: "Bearer "
+        clockSkew: 60
+        requiredClaims:
+          - "sub"
+          - "iat"
+          - "exp"
+          - "enterprise_id"
+        customClaims:
+          consumer_id: "sub"
+          enterprise_id: "enterprise_id"
+          permissions: "permissions"
+      onAuthSuccess:
+        setHeaders:
+          "X-Mse-Consumer": "{consumer_id}"
+          "X-Enterprise-ID": "{enterprise_id}"
+          "X-User-Permissions": "{permissions}"
+  
+  # Partner consumers use API key authentication
+  - consumer:
+    - "api-partner-001"
+    - "api-partner-002"
+    config:
+      apiKeyAuth:
+        keyHeader: "X-API-Key"
+        keyQuery: "api_key"
+        validKeys:
+          - key: "partner-001-key-abc123"
+            consumer: "api-partner-001"
+            permissions: ["read", "write"]
+          - key: "partner-002-key-def456"
+            consumer: "api-partner-002"
+            permissions: ["read"]
+      onAuthSuccess:
+        setHeaders:
+          "X-Mse-Consumer": "{consumer_id}"
+          "X-API-Permissions": "{permissions}"
+  
+  # Internal services use mutual TLS
+  - consumer:
+    - "internal-service-001"
+    - "internal-service-002"
+    config:
+      mtlsAuth:
+        requireClientCert: true
+        trustedCAs:
+          - "internal-ca-cert"
+        verifyClientCertificate: true
+        extractSubjectFromCert: true
+      onAuthSuccess:
+        setHeaders:
+          "X-Mse-Consumer": "{cert_subject}"
+          "X-Internal-Service": "true"
+
+---
+# Example 5: Multi-Plugin Consumer Configuration
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-security-suite
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+    suite: security
+spec:
+  phase: AUTHN
+  priority: 850
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/security-suite:1.0.0
+  matchRules:
+  # High-security consumers get comprehensive protection
+  - consumer:
+    - "financial-partner-001"
+    - "healthcare-client-001"
+    - "government-service-001"
+    config:
+      # Rate limiting
+      rateLimit:
+        requests: 5000
+        window: 60s
+        burst: 500
+      
+      # IP restrictions
+      ipRestriction:
+        allowedIPs:
+          - "203.0.113.0/24"
+          - "198.51.100.0/24"
+        denyMessage: "Access denied: High-security consumer"
+      
+      # Request validation
+      requestValidation:
+        maxRequestSize: 1048576  # 1MB
+        allowedMethods:
+          - "GET"
+          - "POST"
+          - "PUT"
+        requiredHeaders:
+          - "Authorization"
+          - "X-Request-ID"
+        blockedHeaders:
+          - "X-Debug"
+          - "X-Internal"
+      
+      # Response security
+      responseSecurity:
+        removeServerHeaders: true
+        addSecurityHeaders:
+          "X-Content-Type-Options": "nosniff"
+          "X-Frame-Options": "DENY"
+          "X-XSS-Protection": "1; mode=block"
+          "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+      
+      # Logging and monitoring
+      logging:
+        logLevel: "INFO"
+        logRequests: true
+        logResponses: false
+        logHeaders: true
+        sensitiveHeaders:
+          - "Authorization"
+          - "X-API-Key"
+      
+      # Alerting
+      alerting:
+        enableRateLimitAlerts: true
+        enableSecurityAlerts: true
+        alertThreshold: 100
+        alertWindow: 300  # 5 minutes
+  
+  # Standard consumers get basic protection
+  - consumer:
+    - "standard-partner-001"
+    - "standard-partner-002"
+    config:
+      rateLimit:
+        requests: 1000
+        window: 60s
+        burst: 100
+      
+      requestValidation:
+        maxRequestSize: 524288  # 512KB
+        allowedMethods:
+          - "GET"
+          - "POST"
+      
+      responseSecurity:
+        removeServerHeaders: true
+        addSecurityHeaders:
+          "X-Content-Type-Options": "nosniff"
+      
+      logging:
+        logLevel: "WARN"
+        logRequests: false
+        logResponses: false
+  
+  # Default security configuration
+  rateLimit:
+    requests: 100
+    window: 60s
+    burst: 10
+  
+  requestValidation:
+    maxRequestSize: 262144  # 256KB
+    allowedMethods:
+      - "GET"
+  
+  responseSecurity:
+    removeServerHeaders: true
+  
+  logging:
+    logLevel: "ERROR"
+    logRequests: false
+    logResponses: false
+
+---
+# Example 6: Consumer-Level Observability Plugin
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: consumer-observability
+  namespace: higress-system
+  labels:
+    app: higress
+    scope: consumer
+    category: observability
+spec:
+  phase: STATS
+  priority: 100  # Low priority, runs after other plugins
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/observability:1.0.0
+  matchRules:
+  # Premium consumers get detailed metrics and tracing
+  - consumer:
+    - "premium-user-001"
+    - "enterprise-client-001"
+    config:
+      metrics:
+        enableDetailedMetrics: true
+        customMetrics:
+          - name: "consumer_requests_total"
+            type: "counter"
+            labels:
+              - "consumer_id"
+              - "method"
+              - "status_code"
+          - name: "consumer_request_duration"
+            type: "histogram"
+            labels:
+              - "consumer_id"
+              - "endpoint"
+            buckets: [0.1, 0.5, 1.0, 2.5, 5.0, 10.0]
+      
+      tracing:
+        enableTracing: true
+        samplingRate: 1.0  # 100% sampling for premium
+        customTags:
+          consumer_id: "{consumer_id}"
+          consumer_tier: "premium"
+          business_unit: "{business_unit}"
+      
+      logging:
+        enableAccessLogs: true
+        logFormat: "json"
+        customFields:
+          consumer_id: "{consumer_id}"
+          request_id: "{request_id}"
+          processing_time: "{processing_time}"
+          upstream_service: "{upstream_service}"
+  
+  # Standard consumers get basic metrics
+  - consumer:
+    - "standard-user-001"
+    - "api-partner-001"
+    config:
+      metrics:
+        enableDetailedMetrics: false
+        customMetrics:
+          - name: "consumer_requests_total"
+            type: "counter"
+            labels:
+              - "consumer_id"
+              - "status_code"
+      
+      tracing:
+        enableTracing: true
+        samplingRate: 0.1  # 10% sampling for standard
+        customTags:
+          consumer_id: "{consumer_id}"
+          consumer_tier: "standard"
+      
+      logging:
+        enableAccessLogs: false
+  
+  # Default minimal observability
+  metrics:
+    enableDetailedMetrics: false
+    customMetrics:
+      - name: "requests_total"
+        type: "counter"
+        labels:
+          - "status_code"
+  
+  tracing:
+    enableTracing: false
+  
+  logging:
+    enableAccessLogs: false
