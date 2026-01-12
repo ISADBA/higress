@@ -12,17 +12,17 @@
 ## See the License for the specific language governing permissions and
 ## limitations under the License.
 
-docker.higress: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB}
+docker.higress: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB} --build-arg ISTIO_BASE_REGISTRY=${ISTIO_BASE_REGISTRY}
 docker.higress: $(OUT_LINUX)/higress
 docker.higress: docker/Dockerfile.higress
 	$(HIGRESS_DOCKER_RULE)
 
-docker.higress-amd64: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB}
+docker.higress-amd64: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB} --build-arg ISTIO_BASE_REGISTRY=${ISTIO_BASE_REGISTRY}
 docker.higress-amd64: $(AMD64_OUT_LINUX)/higress
 docker.higress-amd64: docker/Dockerfile.higress
 	$(HIGRESS_DOCKER_AMD64_RULE)
 
-docker.higress-buildx: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB}
+docker.higress-buildx: BUILD_ARGS=--build-arg BASE_VERSION=${HIGRESS_BASE_VERSION} --build-arg HUB=${HUB} --build-arg ISTIO_BASE_REGISTRY=${ISTIO_BASE_REGISTRY}
 docker.higress-buildx: $(AMD64_OUT_LINUX)/higress
 docker.higress-buildx: $(ARM64_OUT_LINUX)/higress
 docker.higress-buildx: docker/Dockerfile.higress

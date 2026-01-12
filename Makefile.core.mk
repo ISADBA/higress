@@ -4,7 +4,7 @@ export HIGRESS_BASE_VERSION ?= 2023-07-20T20-50-43
 
 export HUB ?= crpi-0vih3w2g8se3zbl8.cn-hangzhou.personal.cr.aliyuncs.com/isadba
 
-export ISTIO_BASE_REGISTRY ?= $(HUB)
+export ISTIO_BASE_REGISTRY ?= higress-registry.cn-hangzhou.cr.aliyuncs.com/higress
 
 export BASE_VERSION ?= $(HIGRESS_BASE_VERSION)
 
