@@ -18,9 +18,9 @@ import (
 	"time"
 
 	cfg "github.com/alibaba/higress/plugins/wasm-go/extensions/jwt-auth/config"
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
-	"github.com/higress-group/wasm-go/pkg/log"
-	"github.com/higress-group/wasm-go/pkg/wrapper"
 )
 
 // jwt-auth 插件认证逻辑与 basic-auth 一致：

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
 	"github.com/tidwall/gjson"
 )
 

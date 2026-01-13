@@ -18,8 +18,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
 	"github.com/go-jose/go-jose/v3"
-	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/tidwall/gjson"
 )
 
