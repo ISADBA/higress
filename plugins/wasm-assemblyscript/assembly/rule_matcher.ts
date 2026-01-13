@@ -11,7 +11,8 @@ enum Category {
   Route,
   Host,
   RoutePrefix,
-  Service
+  Service,
+  Consumer
 }
 
 enum MatchType {
@@ -24,7 +25,8 @@ const RULES_KEY: string = "_rules_";
 const MATCH_ROUTE_KEY: string = "_match_route_";
 const MATCH_DOMAIN_KEY: string = "_match_domain_";
 const MATCH_SERVICE_KEY: string = "_match_service_";
-const MATCH_ROUTE_PREFIX_KEY: string = "_match_route_prefix_"
+const MATCH_ROUTE_PREFIX_KEY: string = "_match_route_prefix_";
+const MATCH_CONSUMER_KEY: string = "_match_consumer_";
 
 class HostMatcher {
   matchType: MatchType;
@@ -42,6 +44,7 @@ class RuleConfig<PluginConfig> {
   services!:     Map<string, boolean>;
   routePrefixs!: Map<string, boolean>;
   hosts!:        Array<HostMatcher>;
+  consumers!:    Map<string, boolean>;
   config:        PluginConfig | null;
 
   constructor() {
@@ -87,8 +90,21 @@ export class RuleMatcher<PluginConfig> {
     }
     const serviceName = String.UTF8.decode(result.returnValue);
 
+    result = get_property("consumer_name");
+    if (result.status != WasmResultValues.Ok && result.status != WasmResultValues.NotFound) {
+      return new ParseResult<PluginConfig>(null, false);
+    }
+    const consumerName = String.UTF8.decode(result.returnValue);
+
     for (let i = 0; i < this.ruleConfig.length; i++) {
       const rule = this.ruleConfig[i];
+      // category == Consumer
+      if (rule.category == Category.Consumer) {
+        if (consumerName != "" && rule.consumers.has(consumerName)) {
+          log(LogLevelValues.debug, "getMatchConfig: match consumer " + consumerName);
+          return new ParseResult<PluginConfig>(rule.config, true);
+        }
+      }
       // category == Host
       if (rule.category == Category.Host) {
         if (this.hostMatch(rule, host)) {
@@ -182,17 +198,21 @@ export class RuleMatcher<PluginConfig> {
       rule.hosts = this.parseHostMatchConfig(ruleJson);
       rule.services = this.parseServiceMatchConfig(ruleJson);
       rule.routePrefixs = this.parseRoutePrefixMatchConfig(ruleJson);
+      rule.consumers = this.parseConsumerMatchConfig(ruleJson);
 
       const noRoute = rule.routes.size == 0;
       const noHosts = rule.hosts.length == 0;
       const noServices = rule.services.size == 0;
       const noRoutePrefixs = rule.routePrefixs.size == 0;
+      const noConsumers = rule.consumers.size == 0;
 
-      if ((boolToInt(noRoute) + boolToInt(noHosts) + boolToInt(noServices) + boolToInt(noRoutePrefixs)) != 3) {
-        log(LogLevelValues.error, "there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration.");
+      if ((boolToInt(noRoute) + boolToInt(noHosts) + boolToInt(noServices) + boolToInt(noRoutePrefixs) + boolToInt(noConsumers)) != 4) {
+        log(LogLevelValues.error, "there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration.");
         return false;
       }
-      if (!noRoute) {
+      if (!noConsumers) {
+        rule.category = Category.Consumer;
+      } else if (!noRoute) {
         rule.category = Category.Route;
       } else if (!noHosts) {
         rule.category = Category.Host;
@@ -249,6 +269,21 @@ export class RuleMatcher<PluginConfig> {
       }
     }
     return clusters;
+  }
+
+  parseConsumerMatchConfig(config: JSON.Obj): Map<string, boolean> {
+    const keys = config.getArr(MATCH_CONSUMER_KEY);
+    const consumers = new Map<string, boolean>();
+    if (keys) {
+      const array = keys.valueOf();
+      for (let i = 0; i < array.length; i++) {
+        const key = array[i].toString();
+        if (key != "") {
+          consumers.set(key, true);
+        }
+      }
+    }
+    return consumers;
   }
 
   parseHostMatchConfig(config: JSON.Obj): Array<HostMatcher> {

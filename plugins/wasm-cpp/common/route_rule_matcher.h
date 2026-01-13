@@ -61,7 +61,7 @@ using ::Wasm::Common::JsonValueAs;
 template <typename PluginConfig>
 class RouteRuleMatcher {
  public:
-  enum CATEGORY { Route, RoutePrefix, Host, Service, RouteAndService };
+  enum CATEGORY { Route, RoutePrefix, Host, Service, RouteAndService, Consumer };
   enum MATCH_TYPE { Prefix, Exact, Suffix };
   struct RuleConfig {
     CATEGORY category;
@@ -69,6 +69,7 @@ class RouteRuleMatcher {
     std::vector<std::string> route_prefixs;
     std::vector<std::pair<MATCH_TYPE, std::string>> hosts;
     std::unordered_set<std::string> services;
+    std::unordered_set<std::string> consumers;
     bool disable = false;
     PluginConfig config;
   };
@@ -164,6 +165,8 @@ class RouteRuleMatcher {
     getValue({"route_name"}, &route_name);
     std::string service_name;
     getValue({"cluster_name"}, &service_name);
+    std::string consumer_name;
+    getValue({"consumer_name"}, &consumer_name);
     std::optional<std::reference_wrapper<PluginConfig>> match_config;
     int rule_id;
     if (global_config_) {
@@ -173,7 +176,14 @@ class RouteRuleMatcher {
     bool disable_rule = false;
     for (int i = 0; i < rule_config_.size(); ++i) {
       auto& rule = rule_config_[i];
-      if (rule.category == CATEGORY::Host) {
+      if (rule.category == CATEGORY::Consumer) {
+        if (!consumer_name.empty() && rule.consumers.find(consumer_name) != rule.consumers.end()) {
+          rule_id = i + 1;
+          match_config = rule.config;
+          disable_rule = rule.disable;
+          break;
+        }
+      } else if (rule.category == CATEGORY::Host) {
         if (hostMatch(rule, request_host)) {
           rule_id = i + 1;
           match_config = rule.config;
@@ -244,6 +254,8 @@ class RouteRuleMatcher {
     getValue({"route_name"}, &route_name);
     std::string service_name;
     getValue({"cluster_name"}, &service_name);
+    std::string consumer_name;
+    getValue({"consumer_name"}, &consumer_name);
     std::optional<std::reference_wrapper<PluginConfig>> match_config;
     std::optional<std::reference_wrapper<std::unordered_set<std::string>>>
         allow_set;
@@ -256,7 +268,21 @@ class RouteRuleMatcher {
     bool is_matched = false;
     bool disable_rule = false;
     for (auto& auth_rule : auth_rule_config_) {
-      if (auth_rule.rule_config.category == CATEGORY::Host) {
+      if (auth_rule.rule_config.category == CATEGORY::Consumer) {
+        if (!consumer_name.empty() && auth_rule.rule_config.consumers.find(consumer_name) != auth_rule.rule_config.consumers.end()) {
+          LOG_DEBUG(absl::StrFormat("consumer %s is matched for this request",
+                                    consumer_name));
+          is_matched = true;
+          if (auth_rule.rule_config.disable) {
+            disable_rule = true;
+          } else if (auth_rule.has_local_config) {
+            match_config = auth_rule.rule_config.config;
+          } else {
+            allow_set = auth_rule.allow_set;
+          }
+          break;
+        }
+      } else if (auth_rule.rule_config.category == CATEGORY::Host) {
         if (hostMatch(auth_rule.rule_config, request_host)) {
           LOG_DEBUG(absl::StrFormat("host %s is matched for this request",
                                     request_host));
@@ -397,18 +423,25 @@ class RouteRuleMatcher {
         LOG_WARN("failed to parse configuration for _match_service_");
         return false;
       }
+      if (!parseConsumerMatchConfig(config, rule.consumers)) {
+        LOG_WARN("failed to parse configuration for _match_consumer_");
+        return false;
+      }
       auto has_route = !rule.routes.empty();
       auto has_route_prefix = !rule.route_prefixs.empty();
       auto has_service = !rule.services.empty();
       auto has_host = !rule.hosts.empty();
-      if (has_route + has_route_prefix + has_host + has_service == 0) {
+      auto has_consumer = !rule.consumers.empty();
+      if (has_route + has_route_prefix + has_host + has_service + has_consumer == 0) {
         LOG_WARN(
             "there is at least one of  '_match_route_', '_match_domain_', "
-            "'_match_route_prefix_' and '_match_service_' can "
+            "'_match_route_prefix_', '_match_service_' and '_match_consumer_' can "
             "present in configuration.");
         return false;
       }
-      if (has_route) {
+      if (has_consumer) {
+        rule.category = CATEGORY::Consumer;
+      } else if (has_route) {
         rule.category = CATEGORY::Route;
         if (has_service) {
           rule.category = CATEGORY::RouteAndService;
@@ -526,18 +559,25 @@ class RouteRuleMatcher {
         LOG_WARN("failed to parse configuration for _match_domain_");
         return false;
       }
+      if (!parseConsumerMatchConfig(config, auth_rule.rule_config.consumers)) {
+        LOG_WARN("failed to parse configuration for _match_consumer_");
+        return false;
+      }
       auto has_route = !auth_rule.rule_config.routes.empty();
       auto has_route_prefix = !auth_rule.rule_config.route_prefixs.empty();
       auto has_host = !auth_rule.rule_config.hosts.empty();
       auto has_service = !auth_rule.rule_config.services.empty();
-      if (has_route + has_route_prefix + has_host + has_service == 0) {
+      auto has_consumer = !auth_rule.rule_config.consumers.empty();
+      if (has_route + has_route_prefix + has_host + has_service + has_consumer == 0) {
         LOG_WARN(
             "there is at least one of  '_match_route_', '_match_domain_', "
-            "'_match_route_prefix_' and '_match_service_' can "
+            "'_match_route_prefix_', '_match_service_' and '_match_consumer_' can "
             "present in configuration.");
         return false;
       }
-      if (has_route) {
+      if (has_consumer) {
+        auth_rule.rule_config.category = CATEGORY::Consumer;
+      } else if (has_route) {
         auth_rule.rule_config.category = CATEGORY::Route;
         if (has_service) {
           auth_rule.rule_config.category = CATEGORY::RouteAndService;
@@ -703,6 +743,23 @@ class RouteRuleMatcher {
             return false;
           }
           services.insert(parse_result.first.value());
+          return true;
+        });
+  }
+
+  bool parseConsumerMatchConfig(const json& config,
+                               std::unordered_set<std::string>& consumers) {
+    return JsonArrayIterate(
+        config, "_match_consumer_", [&](const json& consumer) -> bool {
+          auto parse_result = JsonValueAs<std::string>(consumer);
+          if (parse_result.second != Wasm::Common::JsonParserResultDetail::OK ||
+              !parse_result.first) {
+            LOG_WARN(
+                "failed to parse '_match_consumer_' field in filter "
+                "configuration.");
+            return false;
+          }
+          consumers.insert(parse_result.first.value());
           return true;
         });
   }
