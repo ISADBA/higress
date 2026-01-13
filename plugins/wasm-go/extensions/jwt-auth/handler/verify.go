@@ -203,6 +203,12 @@ func deniedNotAllow() types.Action {
 
 func authenticated(name string) types.Action {
 	_ = proxywasm.AddHttpRequestHeader("X-Mse-Consumer", name)
+	// Set consumer property for other plugins to use
+	if err := proxywasm.SetProperty([]string{"consumer_name"}, []byte(name)); err != nil {
+		proxywasm.LogWarnf("Failed to set consumer property: %v", err)
+	} else {
+		proxywasm.LogInfof("Consumer property set: %s", name)
+	}
 	return types.ActionContinue
 }
 

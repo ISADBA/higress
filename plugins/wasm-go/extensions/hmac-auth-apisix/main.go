@@ -27,11 +27,12 @@ import (
 	"strings"
 	"time"
 
+	"hmac-auth-apisix/config"
+
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
-	"hmac-auth-apisix/config"
 )
 
 const (
@@ -388,6 +389,12 @@ func sendUnauthorizedResponse(message string) types.Action {
 
 func setConsumerHeader(name string) {
 	_ = proxywasm.AddHttpRequestHeader(consumerHeader, name)
+	// Set consumer property for other plugins to use
+	if err := proxywasm.SetProperty([]string{"consumer_name"}, []byte(name)); err != nil {
+		proxywasm.LogWarnf("Failed to set consumer property: %v", err)
+	} else {
+		proxywasm.LogInfof("Consumer property set: %s", name)
+	}
 }
 
 func contains(arr []string, item string) bool {
