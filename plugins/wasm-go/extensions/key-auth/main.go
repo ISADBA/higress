@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/ISADBA/wasm-go/pkg/log"
 	"github.com/ISADBA/wasm-go/pkg/wrapper"
@@ -237,17 +238,17 @@ func parseOverrideRuleConfig(json gjson.Result, global KeyAuthConfig, config *Ke
 //   - 若没有一个 domain/route 配置该插件：则遵循 (1*)
 //   - 若有至少一个 domain/route 配置该插件：则遵循 (2*)
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log.Log) types.Action {
-	log.Infof("[key-auth] ========== Request Start ==========")
+	log.Warnf("[key-auth] ========== Request Start ==========")
 
 	// 打印请求信息
 	path, _ := proxywasm.GetHttpRequestHeader(":path")
 	method, _ := proxywasm.GetHttpRequestHeader(":method")
 	authority, _ := proxywasm.GetHttpRequestHeader(":authority")
-	log.Infof("[key-auth] Request: %s %s (Host: %s)", method, path, authority)
+	log.Warnf("[key-auth] Request: %s %s (Host: %s)", method, path, authority)
 
 	// 打印路由信息
 	routeName, _ := proxywasm.GetProperty([]string{"route_name"})
-	log.Infof("[key-auth] Route name: %s", string(routeName))
+	log.Warnf("[key-auth] Route name: %s", string(routeName))
 
 	var (
 		noAllow            = len(config.allow) == 0 // 未配置 allow 列表，表示插件在该 domain/route 未生效
@@ -256,18 +257,18 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 		globalAuthSetFalse = !globalAuthNoSet && !*config.globalAuth
 	)
 
-	log.Infof("[key-auth] Config state: noAllow=%v, globalAuthNoSet=%v, globalAuthSetTrue=%v, globalAuthSetFalse=%v, ruleSet=%v",
+	log.Warnf("[key-auth] Config state: noAllow=%v, globalAuthNoSet=%v, globalAuthSetTrue=%v, globalAuthSetFalse=%v, ruleSet=%v",
 		noAllow, globalAuthNoSet, globalAuthSetTrue, globalAuthSetFalse, ruleSet)
-	log.Infof("[key-auth] Allow list: %v", config.allow)
-	log.Infof("[key-auth] Total consumers: %d", len(config.consumers))
-	log.Infof("[key-auth] InHeader: %v, InQuery: %v", config.InHeader, config.InQuery)
-	log.Infof("[key-auth] Keys to look for: %v", config.Keys)
+	log.Warnf("[key-auth] Allow list: %v", config.allow)
+	log.Warnf("[key-auth] Total consumers: %d", len(config.consumers))
+	log.Warnf("[key-auth] InHeader: %v, InQuery: %v", config.InHeader, config.InQuery)
+	log.Warnf("[key-auth] Keys to look for: %v", config.Keys)
 
 	// 打印所有 request headers（调试用）
 	allHeaders, _ := proxywasm.GetHttpRequestHeaders()
-	log.Infof("[key-auth] All request headers (%d):", len(allHeaders))
+	log.Warnf("[key-auth] All request headers (%d):", len(allHeaders))
 	for _, header := range allHeaders {
-		log.Infof("[key-auth]   %s: %s", header[0], header[1])
+		log.Warnf("[key-auth]   %s: %s", header[0], header[1])
 	}
 
 	// 不需要认证而直接放行的情况：
@@ -285,20 +286,32 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 	// - 从 query 中获取 tokens 信息
 	var tokens []string
 	if config.InHeader {
-		log.Infof("[key-auth] Looking for keys in headers: %v", config.Keys)
+		log.Warnf("[key-auth] Looking for keys in headers: %v", config.Keys)
 		// 匹配keys中的 keyname
 		for _, key := range config.Keys {
+			// 尝试原始大小写
 			value, err := proxywasm.GetHttpRequestHeader(key)
-			if err != nil {
-				log.Warnf("[key-auth] Failed to get header '%s': %v", key, err)
-			} else if value == "" {
-				log.Infof("[key-auth] Header '%s' is empty", key)
-			} else {
-				log.Infof("[key-auth] Found key in header '%s': %s", key, value)
+			if err == nil && value != "" {
+				log.Warnf("[key-auth] Found key in header '%s': %s", key, value)
 				tokens = append(tokens, value)
+				continue
 			}
+
+			// 如果原始大小写找不到，尝试小写
+			lowerKey := strings.ToLower(key)
+			if lowerKey != key {
+				log.Warnf("[key-auth] Header '%s' not found, trying lowercase: %s", key, lowerKey)
+				value, err = proxywasm.GetHttpRequestHeader(lowerKey)
+				if err == nil && value != "" {
+					log.Warnf("[key-auth] Found key in header '%s' (lowercase): %s", lowerKey, value)
+					tokens = append(tokens, value)
+					continue
+				}
+			}
+
+			log.Warnf("[key-auth] Header '%s' not found (tried both cases)", key)
 		}
-		log.Infof("[key-auth] Total tokens found: %d", len(tokens))
+		log.Warnf("[key-auth] Total tokens found: %d", len(tokens))
 	} else if config.InQuery {
 		requestUrl, _ := proxywasm.GetHttpRequestHeader(":path")
 		log.Infof("[key-auth] Looking for keys in query string: %s", requestUrl)
