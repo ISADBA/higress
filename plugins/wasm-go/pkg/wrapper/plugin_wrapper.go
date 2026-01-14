@@ -15,95 +15,72 @@
 package wrapper
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
-	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
-	"github.com/alibaba/higress/plugins/wasm-go/pkg/matcher"
+	"github.com/higress-group/wasm-go/pkg/iface"
+	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/higress-group/wasm-go/pkg/matcher"
 )
 
 type Log log.Log
+type PluginContext iface.PluginContext
+type HttpContext iface.HttpContext
 
 const (
-	CustomLogKey       = "custom_log"
-	AILogKey           = "ai_log"
-	TraceSpanTagPrefix = "trace_span_tag."
-	PluginIDKey        = "_plugin_id_"
-	ConsumerContextKey = "consumer_name"
+	CustomLogKey         = "custom_log"
+	AILogKey             = "ai_log"
+	TraceSpanTagPrefix   = "trace_span_tag."
+	PluginIDKey          = "_plugin_id_"
+	VMLeaseKeyPrefix     = "higress_wasm_vm_lease"
+	ConfigStoreLeaderKey = "config_store"
 )
 
-type HttpContext interface {
-	Scheme() string
-	Host() string
-	Path() string
-	Method() string
-	SetContext(key string, value interface{})
-	GetContext(key string) interface{}
-	GetBoolContext(key string, defaultValue bool) bool
-	GetStringContext(key, defaultValue string) string
-	GetByteSliceContext(key string, defaultValue []byte) []byte
-	GetUserAttribute(key string) interface{}
-	SetUserAttribute(key string, value interface{})
-	SetUserAttributeMap(kvmap map[string]interface{})
-	GetUserAttributeMap() map[string]interface{}
-	// You can call this function to set custom log
-	WriteUserAttributeToLog() error
-	// You can call this function to set custom log with your specific key
-	WriteUserAttributeToLogWithKey(key string) error
-	// You can call this function to set custom trace span attribute
-	WriteUserAttributeToTrace() error
-	// If the onHttpRequestBody handle is not set, the request body will not be read by default
-	DontReadRequestBody()
-	// If the onHttpResponseBody handle is not set, the request body will not be read by default
-	DontReadResponseBody()
-	// If the onHttpStreamingRequestBody handle is not set, and the onHttpRequestBody handle is set, the request body will be buffered by default
-	BufferRequestBody()
-	// If the onHttpStreamingResponseBody handle is not set, and the onHttpResponseBody handle is set, the response body will be buffered by default
-	BufferResponseBody()
-	// If any request header is changed in onHttpRequestHeaders, envoy will re-calculate the route. Call this function to disable the re-routing.
-	// You need to call this before making any header modification operations.
-	DisableReroute()
-	// Note that this parameter affects the gateway's memory usage！Support setting a maximum buffer size for each request body individually in request phase.
-	SetRequestBodyBufferLimit(byteSize uint32)
-	// Note that this parameter affects the gateway's memory usage! Support setting a maximum buffer size for each response body individually in response phase.
-	SetResponseBodyBufferLimit(byteSize uint32)
-	// Get contextId of HttpContext
-	GetContextId() uint32
-	// Extract consumer information from request
-	ExtractConsumer() string
-	// Store consumer information for plugin execution
-	StoreConsumerInfo(consumerName string)
-}
+type oldParseConfigFunc[PluginConfig any] func(json gjson.Result, config *PluginConfig, log log.Log) error
+type oldParseRuleConfigFunc[PluginConfig any] func(json gjson.Result, global PluginConfig, config *PluginConfig, log log.Log) error
+type oldOnHttpHeadersFunc[PluginConfig any] func(context HttpContext, config PluginConfig, log log.Log) types.Action
+type oldOnHttpBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, body []byte, log log.Log) types.Action
+type oldOnHttpStreamingBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, chunk []byte, isLastChunk bool, log log.Log) []byte
+type oldOnHttpStreamDoneFunc[PluginConfig any] func(context HttpContext, config PluginConfig, log log.Log)
 
-type oldParseConfigFunc[PluginConfig any] func(json gjson.Result, config *PluginConfig, log Log) error
-type oldParseRuleConfigFunc[PluginConfig any] func(json gjson.Result, global PluginConfig, config *PluginConfig, log Log) error
-type oldOnHttpHeadersFunc[PluginConfig any] func(context HttpContext, config PluginConfig, log Log) types.Action
-type oldOnHttpBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, body []byte, log Log) types.Action
-type oldOnHttpStreamingBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, chunk []byte, isLastChunk bool, log Log) []byte
-type oldOnHttpStreamDoneFunc[PluginConfig any] func(context HttpContext, config PluginConfig, log Log)
-
+type ParseConfigWithContextFunc[PluginConfig any] func(context PluginContext, json gjson.Result, config *PluginConfig) error
 type ParseConfigFunc[PluginConfig any] func(json gjson.Result, config *PluginConfig) error
+type ParseRawConfigFunc[PluginConfig any] func(configBytes []byte, config *PluginConfig) error
+type ParseRawConfigWithContextFunc[PluginConfig any] func(context PluginContext, configBytes []byte, config *PluginConfig) error
 type ParseRuleConfigFunc[PluginConfig any] func(json gjson.Result, global PluginConfig, config *PluginConfig) error
+type ParseRawRuleConfigFunc[PluginConfig any] func(configBytes []byte, global PluginConfig, config *PluginConfig) error
+type ParseRawRuleConfigWithContextFunc[PluginConfig any] func(context PluginContext, configBytes []byte, global PluginConfig, config *PluginConfig) error
 type onHttpHeadersFunc[PluginConfig any] func(context HttpContext, config PluginConfig) types.Action
 type onHttpBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, body []byte) types.Action
 type onHttpStreamingBodyFunc[PluginConfig any] func(context HttpContext, config PluginConfig, chunk []byte, isLastChunk bool) []byte
 type onHttpStreamDoneFunc[PluginConfig any] func(context HttpContext, config PluginConfig)
 
+type onPluginStartOrReload func(context PluginContext) error
+
 type CommonVmCtx[PluginConfig any] struct {
 	types.DefaultVMContext
 	pluginName                  string
-	log                         Log
+	log                         log.Log
 	hasCustomConfig             bool
-	parseConfig                 ParseConfigFunc[PluginConfig]
-	parseRuleConfig             ParseRuleConfigFunc[PluginConfig]
+	vmID                        string
+	prePluginStartOrReload      onPluginStartOrReload
+	parseConfig                 ParseRawConfigWithContextFunc[PluginConfig]
+	parseRuleConfig             ParseRawRuleConfigWithContextFunc[PluginConfig]
 	onHttpRequestHeaders        onHttpHeadersFunc[PluginConfig]
 	onHttpRequestBody           onHttpBodyFunc[PluginConfig]
 	onHttpStreamingRequestBody  onHttpStreamingBodyFunc[PluginConfig]
@@ -111,6 +88,10 @@ type CommonVmCtx[PluginConfig any] struct {
 	onHttpResponseBody          onHttpBodyFunc[PluginConfig]
 	onHttpStreamingResponseBody onHttpStreamingBodyFunc[PluginConfig]
 	onHttpStreamDone            onHttpStreamDoneFunc[PluginConfig]
+	rebuildAfterRequests        uint64 // Number of requests after which to trigger rebuild
+	requestCount                uint64 // Current request count
+	rebuildMaxMem               uint64 // Maximum memory size in bytes before triggering rebuild
+	maxRequestsPerIoCycle       uint64 // Maximum concurrent requests per IO cycle (0 means not set)
 }
 
 type TickFuncEntry struct {
@@ -127,7 +108,7 @@ var globalOnTickFuncs []TickFuncEntry = []TickFuncEntry{}
 //
 // You should call this function in parseConfig phase, for example:
 //
-//	func parseConfig(json gjson.Result, config *HelloWorldConfig, log wrapper.Log) error {
+//	func parseConfig(json gjson.Result, config *HelloWorldConfig, log log.Log) error {
 //	  wrapper.RegisterTickFunc(1000, func() { proxywasm.LogInfo("onTick 1s") })
 //		 wrapper.RegisterTickFunc(3000, func() { proxywasm.LogInfo("onTick 3s") })
 //		 return nil
@@ -149,15 +130,29 @@ type CtxOption[PluginConfig any] interface {
 }
 
 type parseConfigOption[PluginConfig any] struct {
+	rawF ParseRawConfigFunc[PluginConfig]
 	f    ParseConfigFunc[PluginConfig]
 	oldF oldParseConfigFunc[PluginConfig]
+	ctxF ParseConfigWithContextFunc[PluginConfig]
 }
 
 func (o parseConfigOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
-	if o.f != nil {
-		ctx.parseConfig = o.f
-	} else {
-		ctx.parseConfig = func(json gjson.Result, config *PluginConfig) error { return o.oldF(json, config, ctx.log) }
+	if o.rawF != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.rawF(configBytes, config)
+		}
+	} else if o.f != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.f(gjson.ParseBytes(configBytes), config)
+		}
+	} else if o.oldF != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.oldF(gjson.ParseBytes(configBytes), config, ctx.log)
+		}
+	} else if o.ctxF != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.ctxF(context, gjson.ParseBytes(configBytes), config)
+		}
 	}
 }
 
@@ -170,7 +165,17 @@ func ParseConfig[PluginConfig any](f ParseConfigFunc[PluginConfig]) CtxOption[Pl
 	return &parseConfigOption[PluginConfig]{f: f}
 }
 
+func ParseConfigWithContext[PluginConfig any](f ParseConfigWithContextFunc[PluginConfig]) CtxOption[PluginConfig] {
+	return &parseConfigOption[PluginConfig]{ctxF: f}
+}
+
+func ParseRawConfig[PluginConfig any](f ParseRawConfigFunc[PluginConfig]) CtxOption[PluginConfig] {
+	return &parseConfigOption[PluginConfig]{rawF: f}
+}
+
 type parseOverrideConfigOption[PluginConfig any] struct {
+	parseRawConfigF     ParseRawConfigFunc[PluginConfig]
+	parseRawRuleConfigF ParseRawRuleConfigFunc[PluginConfig]
 	parseConfigF        ParseConfigFunc[PluginConfig]
 	parseRuleConfigF    ParseRuleConfigFunc[PluginConfig]
 	oldParseConfigF     oldParseConfigFunc[PluginConfig]
@@ -178,15 +183,26 @@ type parseOverrideConfigOption[PluginConfig any] struct {
 }
 
 func (o *parseOverrideConfigOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
-	if o.parseConfigF != nil && o.parseRuleConfigF != nil {
-		ctx.parseConfig = o.parseConfigF
-		ctx.parseRuleConfig = o.parseRuleConfigF
-	} else {
-		ctx.parseConfig = func(json gjson.Result, config *PluginConfig) error {
-			return o.oldParseConfigF(json, config, ctx.log)
+	if o.parseRawConfigF != nil && o.parseRawRuleConfigF != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.parseRawConfigF(configBytes, config)
 		}
-		ctx.parseRuleConfig = func(json gjson.Result, global PluginConfig, config *PluginConfig) error {
-			return o.oldParseRuleConfigF(json, global, config, ctx.log)
+		ctx.parseRuleConfig = func(context PluginContext, configBytes []byte, global PluginConfig, config *PluginConfig) error {
+			return o.parseRawRuleConfigF(configBytes, global, config)
+		}
+	} else if o.parseConfigF != nil && o.parseRuleConfigF != nil {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.parseConfigF(gjson.ParseBytes(configBytes), config)
+		}
+		ctx.parseRuleConfig = func(context PluginContext, configBytes []byte, global PluginConfig, config *PluginConfig) error {
+			return o.parseRuleConfigF(gjson.ParseBytes(configBytes), global, config)
+		}
+	} else {
+		ctx.parseConfig = func(context PluginContext, configBytes []byte, config *PluginConfig) error {
+			return o.oldParseConfigF(gjson.ParseBytes(configBytes), config, ctx.log)
+		}
+		ctx.parseRuleConfig = func(context PluginContext, configBytes []byte, global PluginConfig, config *PluginConfig) error {
+			return o.oldParseRuleConfigF(gjson.ParseBytes(configBytes), global, config, ctx.log)
 		}
 	}
 }
@@ -203,6 +219,13 @@ func ParseOverrideConfig[PluginConfig any](f ParseConfigFunc[PluginConfig], g Pa
 	return &parseOverrideConfigOption[PluginConfig]{
 		parseConfigF:     f,
 		parseRuleConfigF: g,
+	}
+}
+
+func ParseOverrideRawConfig[PluginConfig any](f ParseRawConfigFunc[PluginConfig], g ParseRawRuleConfigFunc[PluginConfig]) CtxOption[PluginConfig] {
+	return &parseOverrideConfigOption[PluginConfig]{
+		parseRawConfigF:     f,
+		parseRawRuleConfigF: g,
 	}
 }
 
@@ -374,7 +397,7 @@ func ProcessStreamDone[PluginConfig any](f onHttpStreamDoneFunc[PluginConfig]) C
 }
 
 type logOption[PluginConfig any] struct {
-	logger Log
+	logger log.Log
 }
 
 func (o *logOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
@@ -382,11 +405,94 @@ func (o *logOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
 	ctx.log = o.logger
 }
 
-func WithLogger[PluginConfig any](logger Log) CtxOption[PluginConfig] {
+func WithLogger[PluginConfig any](logger log.Log) CtxOption[PluginConfig] {
 	return &logOption[PluginConfig]{logger}
 }
 
-func parseEmptyPluginConfig[PluginConfig any](gjson.Result, *PluginConfig) error {
+type rebuildOption[PluginConfig any] struct {
+	rebuildAfterRequests uint64
+}
+
+func (o *rebuildOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
+	ctx.rebuildAfterRequests = o.rebuildAfterRequests
+	ctx.requestCount = 0
+}
+
+func WithRebuildAfterRequests[PluginConfig any](requestCount uint64) CtxOption[PluginConfig] {
+	return &rebuildOption[PluginConfig]{rebuildAfterRequests: requestCount}
+}
+
+type rebuildMaxMemOption[PluginConfig any] struct {
+	rebuildMaxMem uint64
+}
+
+func (o *rebuildMaxMemOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
+	ctx.rebuildMaxMem = o.rebuildMaxMem
+}
+
+// WithRebuildMaxMemBytes sets the maximum memory size in bytes before triggering a plugin rebuild.
+// When the VM memory reaches this threshold, the rebuild flag will be set.
+// memSizeBytes: The maximum memory size in bytes (e.g., 100*1024*1024 for 100MB)
+func WithRebuildMaxMemBytes[PluginConfig any](memSizeBytes uint64) CtxOption[PluginConfig] {
+	return &rebuildMaxMemOption[PluginConfig]{rebuildMaxMem: memSizeBytes}
+}
+
+type maxRequestsPerIoCycleOption[PluginConfig any] struct {
+	maxRequestsPerIoCycle uint64
+}
+
+func (o *maxRequestsPerIoCycleOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
+	ctx.maxRequestsPerIoCycle = o.maxRequestsPerIoCycle
+}
+
+// WithMaxRequestsPerIoCycle sets the global max requests per IO cycle.
+// This controls how many concurrent requests can be processed in a single IO cycle.
+// The setting is applied during plugin start via the "set_global_max_requests_per_io_cycle" foreign function.
+//
+// Background:
+// When plugin logic is complex, external call callbacks (HTTP/Redis) may timeout within the current
+// IO cycle even if the backend has already returned a response quickly. This is because the plugin
+// execution blocks the IO cycle from processing the callback in time.
+//
+// Recommendation:
+// For plugins with complex logic that need to make external calls (HTTP/Redis), it is recommended
+// to use this setting to limit concurrent requests per IO cycle.
+//
+// Important notes:
+//   - This setting takes effect GLOBALLY, not just for the current plugin.
+//   - When multiple plugins set this value, the SMALLEST limit will take effect.
+//   - Setting this value too small may cause additional CPU overhead.
+//   - Recommended value = external call timeout / total plugin logic execution time across all plugins
+//
+// maxRequests: The maximum number of requests per IO cycle (e.g., 20)
+func WithMaxRequestsPerIoCycle[PluginConfig any](maxRequests uint64) CtxOption[PluginConfig] {
+	return &maxRequestsPerIoCycleOption[PluginConfig]{maxRequestsPerIoCycle: maxRequests}
+}
+
+// setGlobalMaxRequestsPerIoCycle sets the global max requests per IO cycle via foreign function call.
+func setGlobalMaxRequestsPerIoCycle(maxRequests uint64) error {
+	param := make([]byte, 8)
+	binary.LittleEndian.PutUint64(param, maxRequests)
+	_, err := proxywasm.CallForeignFunction("set_global_max_requests_per_io_cycle", param)
+	if err != nil {
+		return fmt.Errorf("set global max requests failed: %w", err)
+	}
+	return nil
+}
+
+type prePluginOption[PluginConfig any] struct {
+	f onPluginStartOrReload
+}
+
+func (o *prePluginOption[PluginConfig]) Apply(ctx *CommonVmCtx[PluginConfig]) {
+	ctx.prePluginStartOrReload = o.f
+}
+
+func PrePluginStartOrReload[PluginConfig any](f onPluginStartOrReload) CtxOption[PluginConfig] {
+	return &prePluginOption[PluginConfig]{f}
+}
+
+func parseEmptyPluginConfig[PluginConfig any](PluginContext, []byte, *PluginConfig) error {
 	return nil
 }
 
@@ -406,6 +512,7 @@ func NewCommonVmCtxWithOptions[PluginConfig any](pluginName string, options ...C
 	ctx := &CommonVmCtx[PluginConfig]{
 		pluginName:      pluginName,
 		hasCustomConfig: true,
+		vmID:            uuid.New().String(),
 	}
 	for _, opt := range options {
 		opt.Apply(ctx)
@@ -424,28 +531,136 @@ func NewCommonVmCtxWithOptions[PluginConfig any](pluginName string, options ...C
 
 func (ctx *CommonVmCtx[PluginConfig]) NewPluginContext(uint32) types.PluginContext {
 	return &CommonPluginCtx[PluginConfig]{
-		vm: ctx,
+		vm:          ctx,
+		userContext: map[string]interface{}{},
 	}
 }
 
 type CommonPluginCtx[PluginConfig any] struct {
 	types.DefaultPluginContext
 	matcher.RuleMatcher[PluginConfig]
-	vm          *CommonVmCtx[PluginConfig]
-	onTickFuncs []TickFuncEntry
+	vm                 *CommonVmCtx[PluginConfig]
+	onTickFuncs        []TickFuncEntry
+	userContext        map[string]interface{}
+	fingerPrint        string
+	ruleLevelIsolation bool
+	isLeader           bool
+}
+
+type Lease struct {
+	VMID      string `json:"vmID"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) DoLeaderElection() {
+	ctx.isLeader = ctx.tryAcquireOrRenewLease()
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) leaderLeaseKey() string {
+	return fmt.Sprintf("%s:%s", VMLeaseKeyPrefix, ctx.fingerPrint)
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) tryAcquireOrRenewLease() bool {
+	now := time.Now().Unix()
+
+	data, cas, err := proxywasm.GetSharedData(ctx.leaderLeaseKey())
+	if err != nil {
+		if errors.Is(err, types.ErrorStatusNotFound) {
+			return ctx.setLease(now, cas)
+		} else {
+			log.Errorf("Failed to get lease: %v", err)
+			return false
+		}
+	}
+	if data == nil {
+		return ctx.setLease(now, cas)
+	}
+
+	var lease Lease
+	err = json.Unmarshal(data, &lease)
+	if err != nil {
+		log.Errorf("Failed to unmarshal lease data: %v", err)
+		return false
+	}
+	// If vmID is itself, try to renew the lease directly
+	// If the lease is expired (60s), try to acquire the lease
+	if lease.VMID == ctx.vm.vmID || now-lease.Timestamp > 60 {
+		lease.VMID = ctx.vm.vmID
+		lease.Timestamp = now
+		return ctx.setLease(now, cas)
+	}
+
+	return false
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) setLease(timestamp int64, cas uint32) bool {
+	lease := Lease{
+		VMID:      ctx.vm.vmID,
+		Timestamp: timestamp,
+	}
+	leaseByte, err := json.Marshal(lease)
+	if err != nil {
+		log.Errorf("Failed to marshal lease data: %v", err)
+		return false
+	}
+
+	if err := proxywasm.SetSharedData(ctx.leaderLeaseKey(), leaseByte, cas); err != nil {
+		log.Errorf("Failed to set or renew lease: %v", err)
+		return false
+	}
+	return true
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) IsLeader() bool {
+	return ctx.isLeader
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) IsRuleLevelConfigIsolation() bool {
+	return ctx.ruleLevelIsolation
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) GetFingerPrint() string {
+	return ctx.fingerPrint
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) EnableRuleLevelConfigIsolation() {
+	ctx.ruleLevelIsolation = true
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) GetContext(key string) interface{} {
+	return ctx.userContext[key]
+}
+
+func (ctx *CommonPluginCtx[PluginConfig]) SetContext(key string, value interface{}) {
+	ctx.userContext[key] = value
 }
 
 func (ctx *CommonPluginCtx[PluginConfig]) OnPluginStart(int) types.OnPluginStartStatus {
+	if ctx.vm.prePluginStartOrReload != nil {
+		err := ctx.vm.prePluginStartOrReload(ctx)
+		if err != nil {
+			log.Errorf("prePluginStartOrReload hook failed: %v", err)
+			return types.OnPluginStartStatusFailed
+		}
+	}
+	// Set max requests per IO cycle if configured
+	if ctx.vm.maxRequestsPerIoCycle > 0 {
+		if err := setGlobalMaxRequestsPerIoCycle(ctx.vm.maxRequestsPerIoCycle); err != nil {
+			log.Warnf("set global max requests per IO cycle failed: %v", err)
+		} else {
+			log.Infof("set global max requests per IO cycle to %d", ctx.vm.maxRequestsPerIoCycle)
+		}
+	}
 	data, err := proxywasm.GetPluginConfiguration()
 	globalOnTickFuncs = nil
 	if err != nil && err != types.ErrorStatusNotFound {
-		ctx.vm.log.Criticalf("error reading plugin configuration: %v", err)
+		log.Criticalf("error reading plugin configuration: %v", err)
 		return types.OnPluginStartStatusFailed
 	}
 	var jsonData gjson.Result
 	if len(data) == 0 {
 		if ctx.vm.hasCustomConfig {
-			ctx.vm.log.Warn("config is empty, but has ParseConfigFunc")
+			log.Warn("config is empty, but has ParseConfigFunc")
 		}
 	} else {
 		if !gjson.ValidBytes(data) {
@@ -459,33 +674,32 @@ func (ctx *CommonPluginCtx[PluginConfig]) OnPluginStart(int) types.OnPluginStart
 		}
 		jsonData = gjson.ParseBytes(data)
 	}
-
 	var parseOverrideConfig func(gjson.Result, PluginConfig, *PluginConfig) error
 	if ctx.vm.parseRuleConfig != nil {
 		parseOverrideConfig = func(js gjson.Result, global PluginConfig, cfg *PluginConfig) error {
-			return ctx.vm.parseRuleConfig(js, global, cfg)
+			return ctx.vm.parseRuleConfig(ctx, []byte(js.Raw), global, cfg)
 		}
 	}
-	err = ctx.ParseRuleConfig(jsonData,
+	err = ctx.ParseRuleConfig(ctx, jsonData,
 		func(js gjson.Result, cfg *PluginConfig) error {
-			return ctx.vm.parseConfig(js, cfg)
+			return ctx.vm.parseConfig(ctx, []byte(js.Raw), cfg)
 		},
 		parseOverrideConfig,
 	)
 	if err != nil {
-		ctx.vm.log.Warnf("parse rule config failed: %v", err)
-		ctx.vm.log.Error("plugin start failed")
+		log.Warnf("parse rule config failed: %v", err)
+		log.Error("plugin start failed")
 		return types.OnPluginStartStatusFailed
 	}
 	if globalOnTickFuncs != nil {
 		ctx.onTickFuncs = globalOnTickFuncs
 		if err := proxywasm.SetTickPeriodMilliSeconds(100); err != nil {
-			ctx.vm.log.Error("SetTickPeriodMilliSeconds failed, onTick functions will not take effect.")
-			ctx.vm.log.Error("plugin start failed")
+			log.Error("SetTickPeriodMilliSeconds failed, onTick functions will not take effect.")
+			log.Error("plugin start failed")
 			return types.OnPluginStartStatusFailed
 		}
 	}
-	ctx.vm.log.Info("plugin start successfully")
+	log.Info("plugin start successfully")
 	return types.OnPluginStartStatusOK
 }
 
@@ -518,23 +732,45 @@ func (ctx *CommonPluginCtx[PluginConfig]) NewHttpContext(contextID uint32) types
 	if ctx.vm.onHttpStreamingResponseBody != nil {
 		httpCtx.streamingResponseBody = true
 	}
-
 	return httpCtx
 }
 
 type CommonHttpCtx[PluginConfig any] struct {
 	types.DefaultHttpContext
-	plugin                *CommonPluginCtx[PluginConfig]
-	config                *PluginConfig
-	needRequestBody       bool
-	needResponseBody      bool
-	streamingRequestBody  bool
-	streamingResponseBody bool
-	requestBodySize       int
-	responseBodySize      int
-	contextID             uint32
-	userContext           map[string]interface{}
-	userAttribute         map[string]interface{}
+	plugin                    *CommonPluginCtx[PluginConfig]
+	config                    *PluginConfig
+	needRequestBody           bool
+	needResponseBody          bool
+	streamingRequestBody      bool
+	streamingResponseBody     bool
+	pauseStreamingResponse    bool
+	requestBodySize           int
+	responseBodySize          int
+	contextID                 uint32
+	userContext               map[string]interface{}
+	userAttribute             map[string]interface{}
+	bufferQueue               [][]byte
+	responseCallback          iface.RouteResponseCallback
+	executionPhase            iface.HTTPExecutionPhase
+	requestHeaderEndOfStream  bool
+	responseHeaderEndOfStream bool
+	// Cached request pseudo-headers from the header phase
+	scheme string
+	host   string
+	path   string
+	method string
+	// Cached request headers from the header phase
+	requestConnection      string
+	requestUpgrade         string
+	requestContentType     string
+	requestContentEncoding string
+	// Cached response headers from the header phase
+	responseContentType     string
+	responseContentEncoding string
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) GetExecutionPhase() iface.HTTPExecutionPhase {
+	return ctx.executionPhase
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) SetContext(key string, value interface{}) {
@@ -610,6 +846,13 @@ func (ctx *CommonHttpCtx[PluginConfig]) WriteUserAttributeToTrace() error {
 	return nil
 }
 
+func (ctx *CommonHttpCtx[PluginConfig]) GetIntContext(key string, defaultValue int) int {
+	if b, ok := ctx.userContext[key].(int); ok {
+		return b
+	}
+	return defaultValue
+}
+
 func (ctx *CommonHttpCtx[PluginConfig]) GetBoolContext(key string, defaultValue bool) bool {
 	if b, ok := ctx.userContext[key].(bool); ok {
 		return b
@@ -631,24 +874,28 @@ func (ctx *CommonHttpCtx[PluginConfig]) GetByteSliceContext(key string, defaultV
 	return defaultValue
 }
 
+func (ctx *CommonHttpCtx[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
+	config, err := ctx.plugin.GetMatchConfig()
+	if err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
 func (ctx *CommonHttpCtx[PluginConfig]) Scheme() string {
-	proxywasm.SetEffectiveContext(ctx.contextID)
-	return GetRequestScheme()
+	return ctx.scheme
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) Host() string {
-	proxywasm.SetEffectiveContext(ctx.contextID)
-	return GetRequestHost()
+	return ctx.host
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) Path() string {
-	proxywasm.SetEffectiveContext(ctx.contextID)
-	return GetRequestPath()
+	return ctx.path
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) Method() string {
-	proxywasm.SetEffectiveContext(ctx.contextID)
-	return GetRequestMethod()
+	return ctx.method
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) DontReadRequestBody() {
@@ -667,32 +914,130 @@ func (ctx *CommonHttpCtx[PluginConfig]) BufferResponseBody() {
 	ctx.streamingResponseBody = false
 }
 
+func (ctx *CommonHttpCtx[PluginConfig]) NeedPauseStreamingResponse() {
+	ctx.pauseStreamingResponse = true
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) PushBuffer(buffer []byte) {
+	ctx.bufferQueue = append(ctx.bufferQueue, buffer)
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) PopBuffer() []byte {
+	var buffer []byte
+	if len(ctx.bufferQueue) > 0 {
+		buffer = ctx.bufferQueue[0]
+		ctx.bufferQueue = ctx.bufferQueue[1:]
+	}
+	return buffer
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) BufferQueueSize() int {
+	return len(ctx.bufferQueue)
+}
+
 func (ctx *CommonHttpCtx[PluginConfig]) DisableReroute() {
 	_ = proxywasm.SetProperty([]string{"clear_route_cache"}, []byte("off"))
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) SetRequestBodyBufferLimit(size uint32) {
-	ctx.plugin.vm.log.Infof("SetRequestBodyBufferLimit: %d", size)
+	ctx.plugin.vm.log.Debugf("SetRequestBodyBufferLimit: %d", size)
 	_ = proxywasm.SetProperty([]string{"set_decoder_buffer_limit"}, []byte(strconv.Itoa(int(size))))
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) SetResponseBodyBufferLimit(size uint32) {
-	ctx.plugin.vm.log.Infof("SetResponseBodyBufferLimit: %d", size)
+	ctx.plugin.vm.log.Debugf("SetResponseBodyBufferLimit: %d", size)
 	_ = proxywasm.SetProperty([]string{"set_encoder_buffer_limit"}, []byte(strconv.Itoa(int(size))))
 }
 
-func (ctx *CommonHttpCtx[PluginConfig]) GetContextId() uint32 {
-	return ctx.contextID
+// HasRequestBody checks if the request has a body.
+// It directly checks whether endOfStream was received during OnHttpRequestHeaders.
+// If endOfStream was true in the header phase, there's no body; otherwise there is a body.
+func (ctx *CommonHttpCtx[PluginConfig]) HasRequestBody() bool {
+	return !ctx.requestHeaderEndOfStream
+}
+
+// HasResponseBody checks if the response has a body.
+// It directly checks whether endOfStream was received during OnHttpResponseHeaders.
+// If endOfStream was true in the header phase, there's no body; otherwise there is a body.
+func (ctx *CommonHttpCtx[PluginConfig]) HasResponseBody() bool {
+	return !ctx.responseHeaderEndOfStream
+}
+
+// IsWebsocket checks if the request is a WebSocket upgrade request.
+// It uses cached header values from the header phase and can be called at any time.
+func (ctx *CommonHttpCtx[PluginConfig]) IsWebsocket() bool {
+	return strings.EqualFold(ctx.requestConnection, "upgrade") && strings.EqualFold(ctx.requestUpgrade, "websocket")
+}
+
+// IsBinaryRequestBody checks if the request body is binary content.
+// It uses cached header values from the header phase and can be called at any time.
+func (ctx *CommonHttpCtx[PluginConfig]) IsBinaryRequestBody() bool {
+	if strings.Contains(ctx.requestContentType, "octet-stream") ||
+		strings.Contains(ctx.requestContentType, "grpc") {
+		return true
+	}
+	return ctx.requestContentEncoding != ""
+}
+
+// IsBinaryResponseBody checks if the response body is binary content.
+// It uses cached header values from the header phase and can be called at any time.
+func (ctx *CommonHttpCtx[PluginConfig]) IsBinaryResponseBody() bool {
+	if strings.Contains(ctx.responseContentType, "octet-stream") ||
+		strings.Contains(ctx.responseContentType, "grpc") {
+		return true
+	}
+	return ctx.responseContentEncoding != ""
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
+	defer recoverFunc()
+	ctx.executionPhase = iface.DecodeHeader
+	// Track if endOfStream was received in the header phase
+	ctx.requestHeaderEndOfStream = endOfStream
+
+	// Cache request pseudo-headers for later access outside of header phase
+	ctx.scheme, _ = proxywasm.GetHttpRequestHeader(":scheme")
+	ctx.host, _ = proxywasm.GetHttpRequestHeader(":authority")
+	ctx.path, _ = proxywasm.GetHttpRequestHeader(":path")
+	ctx.method, _ = proxywasm.GetHttpRequestHeader(":method")
+
+	// Cache request headers for later access outside of header phase
+	ctx.requestConnection, _ = proxywasm.GetHttpRequestHeader("connection")
+	ctx.requestUpgrade, _ = proxywasm.GetHttpRequestHeader("upgrade")
+	ctx.requestContentType, _ = proxywasm.GetHttpRequestHeader("content-type")
+	ctx.requestContentEncoding, _ = proxywasm.GetHttpRequestHeader("content-encoding")
+
 	requestID, _ := proxywasm.GetHttpRequestHeader("x-request-id")
 	_ = proxywasm.SetProperty([]string{"x_request_id"}, []byte(requestID))
 
-	// Extract and store consumer information early in the request processing
-	consumer := ctx.ExtractConsumer()
-	if consumer != "" {
-		ctx.StoreConsumerInfo(consumer)
+	// Increment request count and check rebuild condition
+	if ctx.plugin.vm.rebuildAfterRequests > 0 {
+		ctx.plugin.vm.requestCount++
+		if ctx.plugin.vm.requestCount >= ctx.plugin.vm.rebuildAfterRequests {
+			proxywasm.SetProperty([]string{"wasm_need_rebuild"}, []byte("true"))
+			ctx.plugin.vm.log.Debugf("Plugin reached rebuild threshold after %d requests, rebuild flag set", ctx.plugin.vm.requestCount)
+			ctx.plugin.vm.requestCount = 0
+		}
+	}
+
+	// Check memory usage and rebuild condition
+	if ctx.plugin.vm.rebuildMaxMem > 0 {
+		data, err := proxywasm.GetProperty([]string{"plugin_vm_memory"})
+		if err != nil {
+			ctx.plugin.vm.log.Debugf("Failed to get VM memory: %v", err)
+		} else if len(data) == 8 {
+			memorySize := binary.LittleEndian.Uint64([]byte(data))
+			ctx.plugin.vm.log.Debugf("Current VM memory usage: %d bytes (%.2f MB)",
+				memorySize,
+				float64(memorySize)/(1024*1024))
+
+			if memorySize >= ctx.plugin.vm.rebuildMaxMem {
+				proxywasm.SetProperty([]string{"wasm_need_rebuild"}, []byte("true"))
+				ctx.plugin.vm.log.Debugf("Plugin reached rebuild memory threshold: %d bytes (%.2f MB), rebuild flag set",
+					memorySize,
+					float64(memorySize)/(1024*1024))
+			}
+		}
 	}
 
 	config, err := ctx.plugin.GetMatchConfig()
@@ -705,8 +1050,12 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestHeaders(numHeaders int, end
 	}
 	ctx.config = config
 	// To avoid unexpected operations, plugins do not read the binary content body
-	if IsBinaryRequestBody() {
+	if ctx.IsBinaryRequestBody() {
 		ctx.needRequestBody = false
+	}
+	if ctx.IsWebsocket() {
+		ctx.needRequestBody = false
+		ctx.needResponseBody = false
 	}
 	if ctx.plugin.vm.onHttpRequestHeaders == nil {
 		return types.ActionContinue
@@ -715,6 +1064,8 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestHeaders(numHeaders int, end
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
+	defer recoverFunc()
+	ctx.executionPhase = iface.DecodeData
 	if ctx.config == nil {
 		return types.ActionContinue
 	}
@@ -747,12 +1098,35 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestBody(bodySize int, endOfStr
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseHeaders(numHeaders int, endOfStream bool) types.Action {
+	defer recoverFunc()
+	ctx.executionPhase = iface.EncodeHeader
+	// Track if endOfStream was received in the header phase
+	ctx.responseHeaderEndOfStream = endOfStream
+
+	// Cache response headers for later access outside of header phase
+	ctx.responseContentType, _ = proxywasm.GetHttpResponseHeader("content-type")
+	ctx.responseContentEncoding, _ = proxywasm.GetHttpResponseHeader("content-encoding")
+
 	if ctx.config == nil {
 		return types.ActionContinue
 	}
 	// To avoid unexpected operations, plugins do not read the binary content body
-	if IsBinaryResponseBody() {
+	if ctx.IsBinaryResponseBody() {
 		ctx.needResponseBody = false
+	}
+	if ctx.responseCallback != nil {
+		if endOfStream {
+			statusCode := 500
+			status, _ := proxywasm.GetHttpResponseHeader(":status")
+			headers, _ := proxywasm.GetHttpResponseHeaders()
+			if status != "" {
+				statusCode, _ = strconv.Atoi(status)
+			}
+			ctx.responseCallback(statusCode, headers, nil)
+			return types.HeaderStopAllIterationAndWatermark
+		}
+		ctx.needResponseBody = true
+		return types.HeaderStopIteration
 	}
 	if ctx.plugin.vm.onHttpResponseHeaders == nil {
 		return types.ActionContinue
@@ -761,10 +1135,31 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseHeaders(numHeaders int, en
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseBody(bodySize int, endOfStream bool) types.Action {
+	defer recoverFunc()
+	ctx.executionPhase = iface.EncodeData
 	if ctx.config == nil {
 		return types.ActionContinue
 	}
 	if !ctx.needResponseBody {
+		return types.ActionContinue
+	}
+	if ctx.responseCallback != nil {
+		if !endOfStream {
+			return types.ActionPause
+		}
+		body, err := proxywasm.GetHttpResponseBody(0, bodySize)
+		if err != nil {
+			ctx.plugin.vm.log.Warnf("get response body failed: %v", err)
+			return types.ActionContinue
+		}
+		statusCode := 500
+		status, _ := proxywasm.GetHttpResponseHeader(":status")
+		proxywasm.RemoveHttpResponseHeader("content-length")
+		headers, _ := proxywasm.GetHttpResponseHeaders()
+		if status != "" {
+			statusCode, _ = strconv.Atoi(status)
+		}
+		ctx.responseCallback(statusCode, headers, body)
 		return types.ActionContinue
 	}
 	if ctx.plugin.vm.onHttpStreamingResponseBody != nil && ctx.streamingResponseBody {
@@ -775,14 +1170,16 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseBody(bodySize int, endOfSt
 			ctx.plugin.vm.log.Warnf("replace response body chunk failed: %v", err)
 			return types.ActionContinue
 		}
+		if ctx.pauseStreamingResponse {
+			return types.DataStopIterationNoBuffer
+		}
 		return types.ActionContinue
 	}
 	if ctx.plugin.vm.onHttpResponseBody != nil {
-		ctx.responseBodySize += bodySize
 		if !endOfStream {
 			return types.ActionPause
 		}
-		body, err := proxywasm.GetHttpResponseBody(0, ctx.responseBodySize)
+		body, err := proxywasm.GetHttpResponseBody(0, bodySize)
 		if err != nil {
 			ctx.plugin.vm.log.Warnf("get response body failed: %v", err)
 			return types.ActionContinue
@@ -793,6 +1190,8 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseBody(bodySize int, endOfSt
 }
 
 func (ctx *CommonHttpCtx[PluginConfig]) OnHttpStreamDone() {
+	ctx.executionPhase = iface.Done
+	defer recoverFunc()
 	if ctx.config == nil {
 		return
 	}
@@ -802,114 +1201,64 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpStreamDone() {
 	ctx.plugin.vm.onHttpStreamDone(ctx, *ctx.config)
 }
 
-// ExtractConsumer extracts consumer information from request headers
-func (ctx *CommonHttpCtx[PluginConfig]) ExtractConsumer() string {
-	// 1. Try to extract from X-Mse-Consumer header (set by authentication plugins)
-	if consumerName, err := proxywasm.GetHttpRequestHeader("X-Mse-Consumer"); err == nil && consumerName != "" {
-		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Mse-Consumer header: %s", consumerName)
-		return consumerName
+// This RouteCall must only be invoked during the request body phase, and it requires that stopIteration has been returned during the request header phase.
+func (ctx *CommonHttpCtx[PluginConfig]) RouteCall(method, rawURL string, headers [][2]string, body []byte, callback iface.RouteResponseCallback) error {
+	proxywasm.RemoveHttpRequestHeader("Accept-Encoding")
+	proxywasm.RemoveHttpRequestHeader("Content-Length")
+	requestID := uuid.New().String()
+	ctx.responseCallback = func(statusCode int, responseHeaders [][2]string, responseBody []byte) {
+		callback(statusCode, responseHeaders, responseBody)
+		log.Infof("route call end, id:%s, code:%d, headers:%#v, body:%s", requestID, statusCode, responseHeaders, strings.ReplaceAll(string(responseBody), "\n", `\n`))
 	}
+	originalMethod, _ := proxywasm.GetHttpRequestHeader(":method")
+	originalPath, _ := proxywasm.GetHttpRequestHeader(":path")
+	originalHost, _ := proxywasm.GetHttpRequestHeader(":authority")
+	proxywasm.ReplaceHttpRequestHeader("x-envoy-original-method", originalMethod)
+	proxywasm.ReplaceHttpRequestHeader("x-envoy-original-path", originalPath)
+	proxywasm.ReplaceHttpRequestHeader("x-envoy-original-host", originalHost)
 
-	// 2. Try to extract from X-Consumer-ID header (direct consumer identification)
-	if consumerID, err := proxywasm.GetHttpRequestHeader("X-Consumer-ID"); err == nil && consumerID != "" {
-		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Consumer-ID header: %s", consumerID)
-		return consumerID
+	proxywasm.ReplaceHttpRequestHeader(":method", method)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid url:%s, err:%w", rawURL, err)
 	}
-
-	// 3. Try to extract from X-Consumer-Name header (alternative consumer identification)
-	if consumerName, err := proxywasm.GetHttpRequestHeader("X-Consumer-Name"); err == nil && consumerName != "" {
-		ctx.plugin.vm.log.Debugf("Consumer extracted from X-Consumer-Name header: %s", consumerName)
-		return consumerName
+	var authority string
+	if parsedURL.Host != "" {
+		authority = parsedURL.Host
 	}
-
-	// 4. Try to extract from API Key header (X-API-Key)
-	if apiKey, err := proxywasm.GetHttpRequestHeader("X-API-Key"); err == nil && apiKey != "" {
-		// In a real implementation, this would lookup the consumer associated with the API key
-		// For now, we'll use the API key as a consumer identifier
-		ctx.plugin.vm.log.Debugf("Consumer extracted from X-API-Key header: %s", apiKey)
-		return apiKey
+	path := "/" + strings.TrimPrefix(parsedURL.EscapedPath(), "/")
+	if parsedURL.RawQuery != "" {
+		path = fmt.Sprintf("%s?%s", path, parsedURL.RawQuery)
 	}
+	if parsedURL.Fragment != "" {
+		path = fmt.Sprintf("%s#%s", path, parsedURL.Fragment)
+	}
+	proxywasm.ReplaceHttpRequestHeader(":path", path)
+	if authority != "" {
+		proxywasm.ReplaceHttpRequestHeader(":authority", authority)
+	}
+	for _, kv := range headers {
+		proxywasm.ReplaceHttpRequestHeader(kv[0], kv[1])
+	}
+	proxywasm.ReplaceHttpRequestBody(body)
+	reqHeaders, _ := proxywasm.GetHttpRequestHeaders()
+	clusterName, _ := proxywasm.GetProperty([]string{"cluster_name"})
+	log.Infof("route call start, id:%s, method:%s, url:%s, cluster:%s, headers:%#v, body:%s", requestID, method, rawURL, clusterName, reqHeaders, strings.ReplaceAll(string(body), "\n", `\n`))
+	return nil
+}
 
-	// 5. Try to extract from Authorization header (JWT or Basic Auth)
-	if authHeader, err := proxywasm.GetHttpRequestHeader("Authorization"); err == nil && authHeader != "" {
-		if consumer := ctx.extractConsumerFromAuth(authHeader); consumer != "" {
-			ctx.plugin.vm.log.Debugf("Consumer extracted from Authorization header: %s", consumer)
-			return consumer
+func recoverFunc() {
+	if r := recover(); r != nil {
+		// Check if panic recovery is disabled via environment variable
+		if os.Getenv("WASM_DISABLE_PANIC_RECOVERY") == "true" {
+			// Re-panic to preserve the original panic for debugging
+			panic(r)
 		}
-	}
 
-	// 6. Try to get from property set by authentication plugins
-	if consumerProperty, err := proxywasm.GetProperty([]string{ConsumerContextKey}); err == nil && len(consumerProperty) > 0 {
-		consumer := string(consumerProperty)
-		ctx.plugin.vm.log.Debugf("Consumer extracted from property: %s", consumer)
-		return consumer
-	}
-
-	// No consumer found
-	return ""
-}
-
-// extractConsumerFromAuth extracts consumer information from Authorization header
-func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromAuth(authHeader string) string {
-	// Handle JWT Bearer tokens
-	if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-		token := authHeader[7:]
-		return ctx.extractConsumerFromJWT(token)
-	}
-
-	// Handle Basic Auth
-	if len(authHeader) > 6 && authHeader[:6] == "Basic " {
-		// In a real implementation, this would decode the basic auth and lookup the consumer
-		// For now, we'll use a simplified approach
-		return ctx.extractConsumerFromBasicAuth(authHeader[6:])
-	}
-
-	return ""
-}
-
-// extractConsumerFromJWT extracts consumer information from JWT token
-func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromJWT(token string) string {
-	// This is a simplified implementation
-	// In a real implementation, you would:
-	// 1. Decode the JWT token
-	// 2. Extract the consumer_id or sub field
-	// 3. Validate the token signature
-
-	// For now, we'll just log that we received a JWT and return empty
-	// This should be implemented by authentication plugins that set the consumer property
-	ctx.plugin.vm.log.Debugf("JWT token received, consumer should be set by auth plugin")
-	return ""
-}
-
-// extractConsumerFromBasicAuth extracts consumer information from Basic Auth
-func (ctx *CommonHttpCtx[PluginConfig]) extractConsumerFromBasicAuth(encodedAuth string) string {
-	// This is a simplified implementation
-	// In a real implementation, you would:
-	// 1. Decode the base64 encoded credentials
-	// 2. Lookup the consumer associated with the credentials
-
-	// For now, we'll just log that we received basic auth and return empty
-	// This should be implemented by authentication plugins that set the consumer property
-	ctx.plugin.vm.log.Debugf("Basic auth received, consumer should be set by auth plugin")
-	return ""
-}
-
-// StoreConsumerInfo stores consumer information for plugin execution
-func (ctx *CommonHttpCtx[PluginConfig]) StoreConsumerInfo(consumerName string) {
-	if consumerName == "" {
-		return
-	}
-
-	// Store in internal context for plugin logic
-	ctx.SetContext(ConsumerContextKey, consumerName)
-
-	// Store in user attributes for observability (logs and monitoring)
-	ctx.SetUserAttribute(ConsumerContextKey, consumerName)
-
-	// Set property for other plugins and the matching engine to use
-	if err := proxywasm.SetProperty([]string{ConsumerContextKey}, []byte(consumerName)); err != nil {
-		ctx.plugin.vm.log.Warnf("Failed to set consumer property: %v", err)
-	} else {
-		ctx.plugin.vm.log.Debugf("Consumer information stored: %s", consumerName)
+		// Default behavior: recover and log the panic
+		const size = 64 << 10
+		buf := make([]byte, size)
+		buf = buf[:runtime.Stack(buf, false)]
+		log.Errorf("recovered from panic %v, stack: %s", r, buf)
 	}
 }
