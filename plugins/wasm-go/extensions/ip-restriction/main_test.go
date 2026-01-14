@@ -18,8 +18,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/ISADBA/wasm-go/pkg/test"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
-	"github.com/higress-group/wasm-go/pkg/test"
 	"github.com/stretchr/testify/require"
 )
 

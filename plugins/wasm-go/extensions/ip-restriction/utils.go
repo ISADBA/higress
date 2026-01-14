@@ -9,7 +9,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/zmap/go-iptree/iptree"
 
-	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/ISADBA/wasm-go/pkg/log"
 )
 
 // parseIPNets 解析Ip段配置
