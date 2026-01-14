@@ -239,6 +239,16 @@ func parseOverrideRuleConfig(json gjson.Result, global KeyAuthConfig, config *Ke
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log.Log) types.Action {
 	log.Infof("[key-auth] ========== Request Start ==========")
 
+	// 打印请求信息
+	path, _ := proxywasm.GetHttpRequestHeader(":path")
+	method, _ := proxywasm.GetHttpRequestHeader(":method")
+	authority, _ := proxywasm.GetHttpRequestHeader(":authority")
+	log.Infof("[key-auth] Request: %s %s (Host: %s)", method, path, authority)
+
+	// 打印路由信息
+	routeName, _ := proxywasm.GetProperty([]string{"route_name"})
+	log.Infof("[key-auth] Route name: %s", string(routeName))
+
 	var (
 		noAllow            = len(config.allow) == 0 // 未配置 allow 列表，表示插件在该 domain/route 未生效
 		globalAuthNoSet    = config.globalAuth == nil
@@ -250,6 +260,15 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 		noAllow, globalAuthNoSet, globalAuthSetTrue, globalAuthSetFalse, ruleSet)
 	log.Infof("[key-auth] Allow list: %v", config.allow)
 	log.Infof("[key-auth] Total consumers: %d", len(config.consumers))
+	log.Infof("[key-auth] InHeader: %v, InQuery: %v", config.InHeader, config.InQuery)
+	log.Infof("[key-auth] Keys to look for: %v", config.Keys)
+
+	// 打印所有 request headers（调试用）
+	allHeaders, _ := proxywasm.GetHttpRequestHeaders()
+	log.Infof("[key-auth] All request headers (%d):", len(allHeaders))
+	for _, header := range allHeaders {
+		log.Infof("[key-auth]   %s: %s", header[0], header[1])
+	}
 
 	// 不需要认证而直接放行的情况：
 	// - global_auth == false 且 当前 domain/route 未配置该插件
@@ -270,11 +289,16 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 		// 匹配keys中的 keyname
 		for _, key := range config.Keys {
 			value, err := proxywasm.GetHttpRequestHeader(key)
-			if err == nil && value != "" {
+			if err != nil {
+				log.Warnf("[key-auth] Failed to get header '%s': %v", key, err)
+			} else if value == "" {
+				log.Infof("[key-auth] Header '%s' is empty", key)
+			} else {
 				log.Infof("[key-auth] Found key in header '%s': %s", key, value)
 				tokens = append(tokens, value)
 			}
 		}
+		log.Infof("[key-auth] Total tokens found: %d", len(tokens))
 	} else if config.InQuery {
 		requestUrl, _ := proxywasm.GetHttpRequestHeader(":path")
 		log.Infof("[key-auth] Looking for keys in query string: %s", requestUrl)
@@ -287,6 +311,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 				tokens = append(tokens, values...)
 			}
 		}
+		log.Infof("[key-auth] Total tokens found: %d", len(tokens))
 	}
 
 	// header/query
