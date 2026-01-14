@@ -97,7 +97,7 @@ func parseConfig(json gjson.Result, config *RestrictionConfig, log log.Log) erro
 	return nil
 }
 
-func getDownStreamIp(config RestrictionConfig) (net.IP, error) {
+func getDownStreamIp(config RestrictionConfig, log log.Log) (net.IP, error) {
 	var (
 		s   string
 		err error
@@ -105,47 +105,78 @@ func getDownStreamIp(config RestrictionConfig) (net.IP, error) {
 
 	if config.IPSourceType == HeaderSourceType {
 		s, err = proxywasm.GetHttpRequestHeader(config.IPHeaderName)
+		log.Infof("[ip-restriction] Getting IP from header '%s': %s", config.IPHeaderName, s)
 	} else {
 		var bs []byte
 		bs, err = proxywasm.GetProperty([]string{"source", "address"})
 		s = string(bs)
+		log.Infof("[ip-restriction] Getting IP from source.address property: %s", s)
 	}
 	if err != nil {
+		log.Errorf("[ip-restriction] Failed to get IP source: %v", err)
 		return nil, err
 	}
 	ip := parseIP(s, config.IPSourceType == HeaderSourceType)
+	log.Infof("[ip-restriction] Parsed IP: %s (from raw: %s)", ip, s)
 	realIP := net.ParseIP(ip)
 	if realIP == nil {
+		log.Errorf("[ip-restriction] Invalid IP format: %s", ip)
 		return nil, fmt.Errorf("invalid ip[%s]", ip)
 	}
 	return realIP, nil
 }
 
 func onHttpRequestHeaders(context wrapper.HttpContext, config RestrictionConfig, log log.Log) types.Action {
-	realIp, err := getDownStreamIp(config)
+	log.Infof("[ip-restriction] ========== Request Start ==========")
+
+	// 尝试读取 consumer 信息
+	consumerHeader, _ := proxywasm.GetHttpRequestHeader("X-Mse-Consumer")
+	log.Infof("[ip-restriction] X-Mse-Consumer header: %s", consumerHeader)
+
+	consumerProperty, err := proxywasm.GetProperty([]string{"consumer_name"})
 	if err != nil {
+		log.Infof("[ip-restriction] Failed to get consumer_name property: %v", err)
+	} else {
+		log.Infof("[ip-restriction] consumer_name property: %s", string(consumerProperty))
+	}
+
+	// 获取真实 IP
+	realIp, err := getDownStreamIp(config, log)
+	if err != nil {
+		log.Errorf("[ip-restriction] Failed to get downstream IP: %v", err)
 		return deniedUnauthorized(config, "get_ip_failed")
 	}
+	log.Infof("[ip-restriction] Real IP: %s (source type: %s)", realIp.String(), config.IPSourceType)
+
 	allow := config.Allow
 	deny := config.Deny
+
+	log.Infof("[ip-restriction] Config - Allow list exists: %v, Deny list exists: %v", allow != nil, deny != nil)
+
 	if allow != nil {
 		if realIp == nil {
-			log.Error("realIp is nil, blocked")
+			log.Error("[ip-restriction] realIp is nil, blocked")
 			return deniedUnauthorized(config, "empty_ip")
 		}
 		if _, found, _ := allow.Get(realIp); !found {
+			log.Warnf("[ip-restriction] IP %s not in allow list, blocked", realIp.String())
 			return deniedUnauthorized(config, "ip_not_allowed")
 		}
+		log.Infof("[ip-restriction] IP %s is in allow list, allowed", realIp.String())
 	}
 	if deny != nil {
 		if realIp == nil {
-			log.Error("realIp is nil, continue")
+			log.Error("[ip-restriction] realIp is nil, continue")
 			return types.ActionContinue
 		}
 		if _, found, _ := deny.Get(realIp); found {
+			log.Warnf("[ip-restriction] IP %s is in deny list, blocked", realIp.String())
 			return deniedUnauthorized(config, "ip_denied")
 		}
+		log.Infof("[ip-restriction] IP %s not in deny list, allowed", realIp.String())
 	}
+
+	log.Infof("[ip-restriction] ========== Request End (Continue) ==========")
 	return types.ActionContinue
 }
 

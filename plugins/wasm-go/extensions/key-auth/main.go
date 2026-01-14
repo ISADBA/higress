@@ -237,18 +237,26 @@ func parseOverrideRuleConfig(json gjson.Result, global KeyAuthConfig, config *Ke
 //   - 若没有一个 domain/route 配置该插件：则遵循 (1*)
 //   - 若有至少一个 domain/route 配置该插件：则遵循 (2*)
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log.Log) types.Action {
+	log.Infof("[key-auth] ========== Request Start ==========")
+
 	var (
 		noAllow            = len(config.allow) == 0 // 未配置 allow 列表，表示插件在该 domain/route 未生效
 		globalAuthNoSet    = config.globalAuth == nil
 		globalAuthSetTrue  = !globalAuthNoSet && *config.globalAuth
 		globalAuthSetFalse = !globalAuthNoSet && !*config.globalAuth
 	)
+
+	log.Infof("[key-auth] Config state: noAllow=%v, globalAuthNoSet=%v, globalAuthSetTrue=%v, globalAuthSetFalse=%v, ruleSet=%v",
+		noAllow, globalAuthNoSet, globalAuthSetTrue, globalAuthSetFalse, ruleSet)
+	log.Infof("[key-auth] Allow list: %v", config.allow)
+	log.Infof("[key-auth] Total consumers: %d", len(config.consumers))
+
 	// 不需要认证而直接放行的情况：
 	// - global_auth == false 且 当前 domain/route 未配置该插件
 	// - global_auth 未设置 且 有至少一个 domain/route 配置该插件 且 当前 domain/route 未配置该插件
 	if globalAuthSetFalse || (globalAuthNoSet && ruleSet) {
 		if noAllow {
-			log.Info("authorization is not required")
+			log.Info("[key-auth] Authorization is not required, skipping")
 			return types.ActionContinue
 		}
 	}
@@ -258,20 +266,24 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 	// - 从 query 中获取 tokens 信息
 	var tokens []string
 	if config.InHeader {
+		log.Infof("[key-auth] Looking for keys in headers: %v", config.Keys)
 		// 匹配keys中的 keyname
 		for _, key := range config.Keys {
 			value, err := proxywasm.GetHttpRequestHeader(key)
 			if err == nil && value != "" {
+				log.Infof("[key-auth] Found key in header '%s': %s", key, value)
 				tokens = append(tokens, value)
 			}
 		}
 	} else if config.InQuery {
 		requestUrl, _ := proxywasm.GetHttpRequestHeader(":path")
+		log.Infof("[key-auth] Looking for keys in query string: %s", requestUrl)
 		url, _ := url.Parse(requestUrl)
 		queryValues := url.Query()
 		for _, key := range config.Keys {
 			values, ok := queryValues[key]
 			if ok && len(values) > 0 {
+				log.Infof("[key-auth] Found key in query '%s': %v", key, values)
 				tokens = append(tokens, values...)
 			}
 		}
@@ -279,35 +291,41 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 
 	// header/query
 	if len(tokens) > 1 {
+		log.Warnf("[key-auth] Multiple tokens found: %d", len(tokens))
 		return deniedMultiKeyAuthData()
 	} else if len(tokens) <= 0 {
+		log.Warnf("[key-auth] No token found")
 		return deniedNoKeyAuthData()
 	}
+
+	log.Infof("[key-auth] Validating token: %s", tokens[0])
 
 	// 验证token
 	name, ok := config.credential2Name[tokens[0]]
 	if !ok {
-		log.Warnf("credential %q is not configured", tokens[0])
+		log.Warnf("[key-auth] Credential %q is not configured", tokens[0])
 		return deniedUnauthorizedConsumer()
 	}
 
+	log.Infof("[key-auth] Token validated, consumer: %s", name)
 	proxywasm.AddHttpRequestHeader("X-Mse-Consumer", name)
+	log.Infof("[key-auth] Set X-Mse-Consumer header: %s", name)
 
 	// 全局生效：
 	// - global_auth == true 且 当前 domain/route 未配置该插件
 	// - global_auth 未设置 且 没有任何一个 domain/route 配置该插件
 	if (globalAuthSetTrue && noAllow) || (globalAuthNoSet && !ruleSet) {
-		log.Infof("consumer %q authenticated", name)
+		log.Infof("[key-auth] Global auth mode, consumer %q authenticated", name)
 		return authenticated(name)
 	}
 
 	// 全局生效，但当前 domain/route 配置了 allow 列表
 	if globalAuthSetTrue && !noAllow {
 		if !contains(config.allow, name) {
-			log.Warnf("consumer %q is not allowed", name)
+			log.Warnf("[key-auth] Consumer %q is not in allow list", name)
 			return deniedUnauthorizedConsumer()
 		}
-		log.Infof("consumer %q authenticated", name)
+		log.Infof("[key-auth] Consumer %q authenticated (in allow list)", name)
 		return authenticated(name)
 	}
 
@@ -315,14 +333,15 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config KeyAuthConfig, log log
 	if globalAuthSetFalse || (globalAuthNoSet && ruleSet) {
 		if !noAllow { // 配置了 allow 列表
 			if !contains(config.allow, name) {
-				log.Warnf("consumer %q is not allowed", name)
+				log.Warnf("[key-auth] Consumer %q is not in allow list", name)
 				return deniedUnauthorizedConsumer()
 			}
-			log.Infof("consumer %q authenticated", name)
+			log.Infof("[key-auth] Consumer %q authenticated (in allow list)", name)
 			return authenticated(name)
 		}
 	}
 
+	log.Infof("[key-auth] ========== Request End (Continue) ==========")
 	return types.ActionContinue
 }
 
@@ -347,10 +366,11 @@ func deniedUnauthorizedConsumer() types.Action {
 func authenticated(name string) types.Action {
 	// Set consumer property for other plugins to use
 	if err := proxywasm.SetProperty([]string{"consumer_name"}, []byte(name)); err != nil {
-		proxywasm.LogWarnf("Failed to set consumer property: %v", err)
+		proxywasm.LogWarnf("[key-auth] Failed to set consumer_name property: %v", err)
 	} else {
-		proxywasm.LogInfof("Consumer property set: %s", name)
+		proxywasm.LogInfof("[key-auth] Consumer property set successfully: %s", name)
 	}
+	proxywasm.LogInfof("[key-auth] ========== Request End (Authenticated) ==========")
 	return types.ActionContinue
 }
 
