@@ -3,14 +3,15 @@ package plugins
 import "fmt"
 
 const (
-	ScopeGlobal  = "GLOBAL"
-	ScopeDomain  = "DOMAIN"
-	ScopeService = "SERVICE"
-	ScopeRoute   = "ROUTE"
+	ScopeGlobal   = "GLOBAL"
+	ScopeDomain   = "DOMAIN"
+	ScopeService  = "SERVICE"
+	ScopeRoute    = "ROUTE"
+	ScopeConsumer = "CONSUMER"
 )
 
 // ValidScopes contains all valid plugin scopes
-var ValidScopes = []string{ScopeGlobal, ScopeDomain, ScopeService, ScopeRoute}
+var ValidScopes = []string{ScopeGlobal, ScopeDomain, ScopeService, ScopeRoute, ScopeConsumer}
 
 // IsValidScope checks if the given scope is valid
 func IsValidScope(scope string) bool {
@@ -25,6 +26,8 @@ func IsValidScope(scope string) bool {
 // BuildPluginPath builds the API path for plugin operations based on scope and resource
 func BuildPluginPath(pluginName, scope, resourceName string) string {
 	switch scope {
+	case ScopeConsumer:
+		return fmt.Sprintf("/v1/consumers/%s/plugin-instances/%s", resourceName, pluginName)
 	case ScopeGlobal:
 		return fmt.Sprintf("/v1/global/plugin-instances/%s", pluginName)
 	case ScopeDomain:

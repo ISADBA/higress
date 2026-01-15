@@ -77,6 +77,7 @@ func (c *FakeHttp2Rpcs) List(ctx context.Context, opts metav1.ListOptions) (resu
 func (c *FakeHttp2Rpcs) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
 		InvokesWatch(testing.NewWatchAction(http2rpcsResource, c.ns, opts))
+
 }
 
 // Create takes the representation of a http2Rpc and creates it.  Returns the server's representation of the http2Rpc, and an error, if there is any.

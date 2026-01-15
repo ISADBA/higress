@@ -1119,6 +1119,25 @@ func (m *IngressConfig) convertIstioWasmPlugin(obj *higressext.WasmPlugin) (*ext
 					},
 				}
 			}
+			// match consumer
+			matchItems = nil
+			for _, consumer := range rule.Consumer {
+				matchItems = append(matchItems, &_struct.Value{
+					Kind: &_struct.Value_StringValue{
+						StringValue: consumer,
+					},
+				})
+			}
+			if len(matchItems) > 0 {
+				validRule = true
+				v.StructValue.Fields["_match_consumer_"] = &_struct.Value{
+					Kind: &_struct.Value_ListValue{
+						ListValue: &_struct.ListValue{
+							Values: matchItems,
+						},
+					},
+				}
+			}
 			if validRule {
 				ruleValues = append(ruleValues, &_struct.Value{
 					Kind: v,

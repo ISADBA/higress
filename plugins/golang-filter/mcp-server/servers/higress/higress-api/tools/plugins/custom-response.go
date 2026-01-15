@@ -134,12 +134,12 @@ func getAddOrUpdateCustomResponseConfigSchema() json.RawMessage {
 		"properties": {
 			"scope": {
 				"type": "string",
-				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE"],
+				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE", "CONSUMER"],
 				"description": "The scope at which the plugin is applied"
 			},
 			"resource_name": {
 				"type": "string",
-				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE scopes)"
+				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE, CONSUMER scopes)"
 			},
 			"enabled": {
 				"type": "boolean",

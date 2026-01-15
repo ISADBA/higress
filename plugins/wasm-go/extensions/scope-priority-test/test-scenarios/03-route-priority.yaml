@@ -1,0 +1,37 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: scope-priority-test-route-priority
+  namespace: higress-system
+spec:
+  # 测试场景 3: GLOBAL + ROUTE 配置
+  # 预期结果:
+  #   - route=test-route 的请求使用 ROUTE 配置
+  #   - 其他请求使用 GLOBAL 配置
+  defaultConfig:
+    scopeType: GLOBAL
+    message: "[TEST-03] Global config - fallback for non-route requests"
+    priority: 1
+    enableRequestHeaders: true
+    enableResponseHeaders: false
+    enableRequestBody: false
+    enableResponseBody: false
+  
+  defaultConfigDisable: false
+  
+  matchRules:
+    - config:
+        scopeType: ROUTE
+        message: "[TEST-03] Route config - should override global for test-route"
+        priority: 80
+        enableRequestHeaders: true
+        enableResponseHeaders: true
+        enableRequestBody: true
+        enableResponseBody: false
+      configDisable: false
+      ingress:
+        - test-route
+  
+  phase: UNSPECIFIED_PHASE
+  priority: 0
+  url: oci://your-registry/scope-priority-test:1.0.0

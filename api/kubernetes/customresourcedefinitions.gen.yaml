@@ -63,6 +63,10 @@ spec:
                       x-kubernetes-preserve-unknown-fields: true
                     configDisable:
                       type: boolean
+                    consumer:
+                      items:
+                        type: string
+                      type: array
                     domain:
                       items:
                         type: string

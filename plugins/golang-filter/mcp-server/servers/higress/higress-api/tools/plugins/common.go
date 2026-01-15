@@ -58,6 +58,8 @@ func handleListPluginInstances(client *higress.HigressClient) common.ToolHandler
 		// The API endpoint for listing all plugin instances at a specific scope
 		var path string
 		switch scope {
+		case ScopeConsumer:
+			path = fmt.Sprintf("/v1/consumers/%s/plugin-instances", resourceName)
 		case ScopeGlobal:
 			path = "/v1/global/plugin-instances"
 		case ScopeDomain:
@@ -184,12 +186,12 @@ func getListPluginInstancesSchema() json.RawMessage {
 		"properties": {
 			"scope": {
 				"type": "string",
-				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE"],
+				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE", "CONSUMER"],
 				"description": "The scope at which to list plugin instances"
 			},
 			"resource_name": {
 				"type": "string",
-				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE scopes). For example, the route name, domain name, or service name"
+				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE, CONSUMER scopes). For example, the route name, domain name, service name, or consumer name"
 			}
 		},
 		"required": ["scope"],
@@ -207,12 +209,12 @@ func getPluginConfigSchema() json.RawMessage {
 			},
 			"scope": {
 				"type": "string",
-				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE"],
+				"enum": ["GLOBAL", "DOMAIN", "SERVICE", "ROUTE", "CONSUMER"],
 				"description": "The scope at which the plugin is applied"
 			},
 			"resource_name": {
 				"type": "string",
-				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE scopes)"
+				"description": "The name of the resource (required for DOMAIN, SERVICE, ROUTE, CONSUMER scopes)"
 			}
 		},
 		"required": ["name", "scope"],

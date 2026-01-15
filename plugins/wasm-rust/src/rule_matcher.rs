@@ -29,6 +29,7 @@ enum Category {
     Host,
     RoutePrefix,
     Service,
+    Consumer,
 }
 
 #[derive(PartialEq)]
@@ -43,6 +44,7 @@ const MATCH_ROUTE_KEY: &str = "_match_route_";
 const MATCH_DOMAIN_KEY: &str = "_match_domain_";
 const MATCH_SERVICE_KEY: &str = "_match_service_";
 const MATCH_ROUTE_PREFIX_KEY: &str = "_match_route_prefix_";
+const MATCH_CONSUMER_KEY: &str = "_match_consumer_";
 
 pub type SharedRuleMatcher<PluginConfig> = Rc<RefCell<RuleMatcher<PluginConfig>>>;
 
@@ -58,6 +60,7 @@ struct RuleConfig<PluginConfig> {
     hosts: Vec<HostMatcher>,
     route_prefixes: HashSet<String>,
     services: HashSet<String>,
+    consumers: HashSet<String>,
     config: Rc<PluginConfig>,
 }
 
@@ -132,21 +135,25 @@ where
             let services = RuleMatcher::<PluginConfig>::parse_service_match_config(rule_json);
             let route_prefixes =
                 RuleMatcher::<PluginConfig>::parse_route_prefix_match_config(rule_json);
+            let consumers = RuleMatcher::<PluginConfig>::parse_consumer_match_config(rule_json);
 
             let no_routes = routes.is_empty();
             let no_hosts = hosts.is_empty();
             let no_service = services.is_empty();
             let no_route_prefix = route_prefixes.is_empty();
-            if [no_routes, no_hosts, no_service, no_route_prefix]
+            let no_consumer = consumers.is_empty();
+            if [no_routes, no_hosts, no_service, no_route_prefix, no_consumer]
                 .iter()
                 .filter(|&x| *x)
                 .count()
-                != 3
+                != 4
             {
-                return Err(WasmRustError::new("there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration.".to_string()));
+                return Err(WasmRustError::new("there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration.".to_string()));
             }
 
-            let category = if !no_routes {
+            let category = if !no_consumer {
+                Category::Consumer
+            } else if !no_routes {
                 Category::Route
             } else if !no_hosts {
                 Category::Host
@@ -162,6 +169,7 @@ where
                 hosts,
                 route_prefixes,
                 services,
+                consumers,
                 config: Rc::new(config),
             })
         }
@@ -176,16 +184,25 @@ where
         let service_name =
             String::from_utf8(get_property(vec!["cluster_name"]).unwrap_or_default())
                 .unwrap_or_else(|_| "".to_string());
-        self.get_match_config_by_args(&host, &route_name, &service_name)
+        let consumer_name =
+            String::from_utf8(get_property(vec!["consumer_name"]).unwrap_or_default())
+                .unwrap_or_else(|_| "".to_string());
+        self.get_match_config_by_args(&host, &route_name, &service_name, &consumer_name)
     }
     fn get_match_config_by_args(
         &self,
         host: &str,
         route_name: &str,
         service_name: &str,
+        consumer_name: &str,
     ) -> Option<(i64, Rc<PluginConfig>)> {
         for (i, rule) in self.rule_config.iter().enumerate() {
             match rule.category {
+                Category::Consumer => {
+                    if !consumer_name.is_empty() && rule.consumers.contains(consumer_name) {
+                        return Some((i as i64, rule.config.clone()));
+                    }
+                }
                 Category::Host => {
                     if self.host_match(rule, host) {
                         return Some((i as i64, rule.config.clone()));
@@ -246,6 +263,9 @@ where
     }
     fn parse_route_prefix_match_config(config: &Value) -> HashSet<String> {
         Self::parse_match_config(MATCH_ROUTE_PREFIX_KEY, config)
+    }
+    fn parse_consumer_match_config(config: &Value) -> HashSet<String> {
+        Self::parse_match_config(MATCH_CONSUMER_KEY, config)
     }
 
     fn parse_host_match_config(config: &Value) -> Vec<HostMatcher> {
@@ -389,6 +409,7 @@ mod tests {
                     hosts: Vec::default(),
                     route_prefixes: HashSet::default(),
                     services: HashSet::default(),
+                    consumers: HashSet::default(),
                 },
             }
         }
@@ -409,6 +430,10 @@ mod tests {
         }
         fn add_service(mut self, service_name: &str) -> Self {
             self.config.services.insert(service_name.to_string());
+            self
+        }
+        fn add_consumer(mut self, consumer_name: &str) -> Self {
+            self.config.consumers.insert(consumer_name.to_string());
             self
         }
         fn config(self) -> RuleConfig<Config> {
@@ -609,6 +634,7 @@ mod tests {
                     || s.hosts != o.hosts
                     || s.route_prefixes != o.route_prefixes
                     || s.services != o.services
+                    || s.consumers != o.consumers
                 {
                     return false;
                 }
@@ -622,9 +648,9 @@ mod tests {
         let cases = vec![
             ParseTestCase::new("global config", r#"{"name":"john", "age":18}"#, "").global_config(CustomConfig::new("john", 18)),
             ParseTestCase::new("no rule", r#"{"_rules_":[]}"#, "parse config failed, no valid rules; global config parse error:"),
-            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"_match_domain_":["*"],"_match_route_":["test"]}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration."),
-            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"_match_domain_":["*"],"_match_service_":["test.dns"]}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration."),
-            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"age":16}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration."),
+            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"_match_domain_":["*"],"_match_route_":["test"]}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration."),
+            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"_match_domain_":["*"],"_match_service_":["test.dns"]}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration."),
+            ParseTestCase::new("invalid rule", r#"{"_rules_":[{"age":16}]}"#, "there is only one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration."),
             ParseTestCase::new("rules config", r#"{"_rules_":[{"_match_domain_":["*.example.com","www.*","*","www.abc.com"],"name":"john", "age":18},{"_match_route_":["test1","test2"],"name":"ann", "age":16},{"_match_service_":["test1.dns","test2.static:8080"],"name":"ann", "age":16},{"_match_route_prefix_":["api1","api2"],"name":"ann", "age":16}]}"#, "")
                 .rule_config(RuleConfigBuilder::new(Category::Host, Rc::new(CustomConfig::new("john", 18))).add_host(MatchType::Suffix, ".example.com").add_host(MatchType::Prefix, "www.").add_host(MatchType::Suffix, "").add_host(MatchType::Exact, "www.abc.com").config())
                 .rule_config(RuleConfigBuilder::new(Category::Route, Rc::new(CustomConfig::new("ann", 16))).add_route("test1").add_route("test2").config())
@@ -657,15 +683,15 @@ mod tests {
             .unwrap(),
         );
         assert!(res.is_ok());
-        let config = rule.get_match_config_by_args("test", "test", "test");
+        let config = rule.get_match_config_by_args("test", "test", "test", "");
         assert!(config.is_none());
-        let config = rule.get_match_config_by_args("test", "test1", "test");
+        let config = rule.get_match_config_by_args("test", "test1", "test", "");
         assert!(config.is_some());
         let c = config.unwrap();
         assert_eq!(c.1.name, "ann");
         assert_eq!(c.1.age, 16);
 
-        let config = rule.get_match_config_by_args("test", "test2", "test");
+        let config = rule.get_match_config_by_args("test", "test2", "test", "");
         assert!(config.is_some());
         let c = config.unwrap();
         assert_eq!(c.1.name, "ann");
@@ -680,9 +706,9 @@ mod tests {
             &serde_json::from_str(r#"{"_rules_":[{"_match_route_":["test1"]}]}"#).unwrap(),
         );
         assert!(res.is_ok());
-        let config = rule.get_match_config_by_args("test", "test", "test");
+        let config = rule.get_match_config_by_args("test", "test", "test", "");
         assert!(config.is_none());
-        let config = rule.get_match_config_by_args("test", "test1", "test");
+        let config = rule.get_match_config_by_args("test", "test1", "test", "");
         assert!(config.is_some());
         let c = config.unwrap();
         assert_eq!(c.1.name, "");

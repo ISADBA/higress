@@ -1,0 +1,86 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: scope-priority-test-full-chain
+  namespace: higress-system
+spec:
+  # 测试场景 4: 所有作用域配置
+  # 预期优先级顺序: CONSUMER > ROUTE > SERVICE > DOMAIN > GLOBAL
+  # 测试方法:
+  #   1. consumer=premium-user 的请求 -> 使用 CONSUMER 配置 (priority=100)
+  #   2. route=test-route 且无 consumer 的请求 -> 使用 ROUTE 配置 (priority=80)
+  #   3. service=test-service 且无 consumer/route 的请求 -> 使用 SERVICE 配置 (priority=70)
+  #   4. domain=example.com 且无 consumer/route/service 的请求 -> 使用 DOMAIN 配置 (priority=60)
+  #   5. 其他请求 -> 使用 GLOBAL 配置 (priority=1)
+  
+  defaultConfig:
+    scopeType: GLOBAL
+    message: "[TEST-04] Global config - LOWEST PRIORITY - fallback for all"
+    priority: 1
+    enableRequestHeaders: true
+    enableResponseHeaders: true
+    enableRequestBody: false
+    enableResponseBody: false
+  
+  defaultConfigDisable: false
+  
+  matchRules:
+    # 规则 1: CONSUMER 作用域 (最高优先级 = 100)
+    - config:
+        scopeType: CONSUMER
+        message: "[TEST-04] Consumer config - PRIORITY 100 - HIGHEST"
+        priority: 100
+        enableRequestHeaders: true
+        enableResponseHeaders: true
+        enableRequestBody: true
+        enableResponseBody: true
+      configDisable: false
+      consumer:
+        - premium-user
+        - enterprise-user
+    
+    # 规则 2: ROUTE 作用域 (优先级 = 80)
+    - config:
+        scopeType: ROUTE
+        message: "[TEST-04] Route config - PRIORITY 80 - second highest"
+        priority: 80
+        enableRequestHeaders: true
+        enableResponseHeaders: true
+        enableRequestBody: true
+        enableResponseBody: false
+      configDisable: false
+      ingress:
+        - test-route
+        - api-route
+    
+    # 规则 3: SERVICE 作用域 (优先级 = 70)
+    - config:
+        scopeType: SERVICE
+        message: "[TEST-04] Service config - PRIORITY 70 - third"
+        priority: 70
+        enableRequestHeaders: true
+        enableResponseHeaders: true
+        enableRequestBody: false
+        enableResponseBody: false
+      configDisable: false
+      service:
+        - test-service.default.svc.cluster.local
+        - backend-service.default.svc.cluster.local
+    
+    # 规则 4: DOMAIN 作用域 (优先级 = 60)
+    - config:
+        scopeType: DOMAIN
+        message: "[TEST-04] Domain config - PRIORITY 60 - fourth"
+        priority: 60
+        enableRequestHeaders: true
+        enableResponseHeaders: false
+        enableRequestBody: false
+        enableResponseBody: false
+      configDisable: false
+      domain:
+        - example.com
+        - "*.example.com"
+  
+  phase: UNSPECIFIED_PHASE
+  priority: 0
+  url: oci://your-registry/scope-priority-test:1.0.0
