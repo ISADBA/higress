@@ -20,7 +20,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 )
@@ -284,7 +284,7 @@ func TestParseRuleConfig(t *testing.T) {
 		},
 		{
 			name:   "rules config",
-			config: `{"_rules_":[{"_match_domain_":["*.example.com","www.*","*","www.abc.com"],"name":"john", "age":18},{"_match_route_":["test1","test2"],"name":"ann", "age":16},{"_match_service_":["test1.dns","test2.static:8080"],"name":"ann", "age":16},{"_match_route_prefix_":["api1","api2"],"name":"ann", "age":16}]}`,
+			config: `{"_rules_":[{"_match_domain_":["*.example.com","www.*","*","www.abc.com"],"name":"john", "age":18},{"_match_route_":["test1","test2"],"name":"ann", "age":16},{"_match_service_":["test1.dns","test2.static:8080"],"name":"ann", "age":16},{"_match_route_prefix_":["api1","api2"],"name":"ann", "age":16},{"_match_consumer_":["consumer1","consumer2"],"name":"bob", "age":20}]}`,
 			expected: RuleMatcher[customConfig]{
 				ruleConfig: []RuleConfig[customConfig]{
 					{
@@ -310,6 +310,7 @@ func TestParseRuleConfig(t *testing.T) {
 						routes:       map[string]struct{}{},
 						services:     map[string]struct{}{},
 						routePrefixs: map[string]struct{}{},
+						consumers:    map[string]struct{}{},
 						config: customConfig{
 							name: "john",
 							age:  18,
@@ -323,6 +324,7 @@ func TestParseRuleConfig(t *testing.T) {
 						},
 						services:     map[string]struct{}{},
 						routePrefixs: map[string]struct{}{},
+						consumers:    map[string]struct{}{},
 						config: customConfig{
 							name: "ann",
 							age:  16,
@@ -336,6 +338,7 @@ func TestParseRuleConfig(t *testing.T) {
 							"test2.static:8080": {},
 						},
 						routePrefixs: map[string]struct{}{},
+						consumers:    map[string]struct{}{},
 						config: customConfig{
 							name: "ann",
 							age:  16,
@@ -349,9 +352,24 @@ func TestParseRuleConfig(t *testing.T) {
 							"api1": {},
 							"api2": {},
 						},
+						consumers: map[string]struct{}{},
 						config: customConfig{
 							name: "ann",
 							age:  16,
+						},
+					},
+					{
+						category:     Consumer,
+						routes:       map[string]struct{}{},
+						services:     map[string]struct{}{},
+						routePrefixs: map[string]struct{}{},
+						consumers: map[string]struct{}{
+							"consumer1": {},
+							"consumer2": {},
+						},
+						config: customConfig{
+							name: "bob",
+							age:  20,
 						},
 					},
 				},
@@ -365,7 +383,7 @@ func TestParseRuleConfig(t *testing.T) {
 		{
 			name:   "invalid rule",
 			config: `{"_rules_":[{"age":16}]}`,
-			errMsg: "there is at least one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration.",
+			errMsg: "there is at least one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration.",
 		},
 	}
 	for _, c := range cases {
@@ -442,6 +460,7 @@ func TestParseOverrideConfig(t *testing.T) {
 						},
 						services:     map[string]struct{}{},
 						routePrefixs: map[string]struct{}{},
+						consumers:    map[string]struct{}{},
 						config: completeConfig{
 							consumers: []string{"c1", "c2", "c3"},
 							allow:     []string{"c1", "c3"},
@@ -484,6 +503,97 @@ func TestParseOverrideConfig(t *testing.T) {
 	}
 }
 
+func TestConsumerMatch(t *testing.T) {
+	cases := []struct {
+		name     string
+		config   string
+		expected RuleMatcher[customConfig]
+	}{
+		{
+			name:   "consumer only",
+			config: `{"_rules_":[{"_match_consumer_":["consumer1","consumer2"],"name":"consumer-config","age":30}]}`,
+			expected: RuleMatcher[customConfig]{
+				ruleConfig: []RuleConfig[customConfig]{
+					{
+						category:     Consumer,
+						routes:       map[string]struct{}{},
+						services:     map[string]struct{}{},
+						routePrefixs: map[string]struct{}{},
+						consumers: map[string]struct{}{
+							"consumer1": {},
+							"consumer2": {},
+						},
+						config: customConfig{
+							name: "consumer-config",
+							age:  30,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "consumer with route (consumer takes priority)",
+			config: `{"_rules_":[{"_match_consumer_":["consumer1"],"_match_route_":["route1"],"name":"consumer-config","age":30}]}`,
+			expected: RuleMatcher[customConfig]{
+				ruleConfig: []RuleConfig[customConfig]{
+					{
+						category: Consumer,
+						routes: map[string]struct{}{
+							"route1": {},
+						},
+						services:     map[string]struct{}{},
+						routePrefixs: map[string]struct{}{},
+						consumers: map[string]struct{}{
+							"consumer1": {},
+						},
+						config: customConfig{
+							name: "consumer-config",
+							age:  30,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "consumer with host (consumer takes priority)",
+			config: `{"_rules_":[{"_match_consumer_":["consumer1"],"_match_domain_":["*.example.com"],"name":"consumer-config","age":30}]}`,
+			expected: RuleMatcher[customConfig]{
+				ruleConfig: []RuleConfig[customConfig]{
+					{
+						category: Consumer,
+						routes:   map[string]struct{}{},
+						hosts: []HostMatcher{
+							{
+								matchType: Suffix,
+								host:      ".example.com",
+							},
+						},
+						services:     map[string]struct{}{},
+						routePrefixs: map[string]struct{}{},
+						consumers: map[string]struct{}{
+							"consumer1": {},
+						},
+						config: customConfig{
+							name: "consumer-config",
+							age:  30,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var actual RuleMatcher[customConfig]
+			var ctx mockPluginContext
+			err := actual.ParseRuleConfig(&ctx, gjson.Parse(c.config), parseConfig, nil)
+			assert.NoError(t, err, "Parse should not fail")
+			assert.Equal(t, c.expected, actual)
+		})
+	}
+}
+
 func TestGenerateHashKey(t *testing.T) {
 	// Test hash key stability - same rule should generate same hash key
 	rule1 := RuleConfig[customConfig]{
@@ -503,6 +613,10 @@ func TestGenerateHashKey(t *testing.T) {
 		hosts: []HostMatcher{
 			{matchType: Exact, host: "host2.com"},
 			{matchType: Exact, host: "host1.com"},
+		},
+		consumers: map[string]struct{}{
+			"consumer2": {},
+			"consumer1": {},
 		},
 	}
 
@@ -524,6 +638,10 @@ func TestGenerateHashKey(t *testing.T) {
 			{matchType: Exact, host: "host1.com"},
 			{matchType: Exact, host: "host2.com"},
 		},
+		consumers: map[string]struct{}{
+			"consumer1": {},
+			"consumer2": {},
+		},
 	}
 
 	hash1 := rule1.GenerateHashKey()
@@ -542,6 +660,18 @@ func TestGenerateHashKey(t *testing.T) {
 
 	hash3 := rule3.GenerateHashKey()
 	assert.NotEqual(t, hash1, hash3, "Different rules should generate different hash keys")
+
+	// Test consumer-specific hash key
+	rule4 := RuleConfig[customConfig]{
+		category: Consumer,
+		consumers: map[string]struct{}{
+			"consumer1": {},
+		},
+	}
+
+	hash4 := rule4.GenerateHashKey()
+	assert.NotEmpty(t, hash4, "Consumer rule hash key should not be empty")
+	assert.NotEqual(t, hash1, hash4, "Consumer rule should have different hash key")
 }
 
 func TestBackupStore(t *testing.T) {
@@ -556,6 +686,9 @@ func TestBackupStore(t *testing.T) {
 		routes: map[string]struct{}{
 			"test-route": {},
 		},
+		services:     map[string]struct{}{},
+		routePrefixs: map[string]struct{}{},
+		consumers:    map[string]struct{}{},
 		config: customConfig{
 			name: "test",
 			age:  25,
@@ -579,6 +712,10 @@ func TestBackupStore(t *testing.T) {
 		hosts: []HostMatcher{
 			{matchType: Exact, host: "non-existent.com"},
 		},
+		routes:       map[string]struct{}{},
+		services:     map[string]struct{}{},
+		routePrefixs: map[string]struct{}{},
+		consumers:    map[string]struct{}{},
 	}
 
 	loadedJson2 := matcher.loadRuleJsonFromBackup(&ctx, nonExistentRule)

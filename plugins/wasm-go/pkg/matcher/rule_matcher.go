@@ -20,12 +20,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/iface"
+	"github.com/alibaba/higress/plugins/wasm-go/pkg/log"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/tidwall/gjson"
-
-	"github.com/higress-group/wasm-go/pkg/iface"
-	"github.com/higress-group/wasm-go/pkg/log"
 )
 
 type Category int
@@ -36,6 +35,7 @@ const (
 	Service
 	RoutePrefix
 	RouteAndService
+	Consumer
 )
 
 type MatchType int
@@ -52,6 +52,7 @@ const (
 	MATCH_DOMAIN_KEY       = "_match_domain_"
 	MATCH_SERVICE_KEY      = "_match_service_"
 	MATCH_ROUTE_PREFIX_KEY = "_match_route_prefix_"
+	MATCH_CONSUMER_KEY     = "_match_consumer_"
 )
 
 type HostMatcher struct {
@@ -65,6 +66,7 @@ type RuleConfig[PluginConfig any] struct {
 	services     map[string]struct{}
 	routePrefixs map[string]struct{}
 	hosts        []HostMatcher
+	consumers    map[string]struct{}
 	config       PluginConfig
 }
 
@@ -115,6 +117,16 @@ func (r *RuleConfig[PluginConfig]) GenerateHashKey() string {
 		keyParts = append(keyParts, fmt.Sprintf("hosts:%s", strings.Join(hosts, ",")))
 	}
 
+	// Add consumers (sorted for stability)
+	if len(r.consumers) > 0 {
+		var consumers []string
+		for consumer := range r.consumers {
+			consumers = append(consumers, consumer)
+		}
+		sort.Strings(consumers)
+		keyParts = append(keyParts, fmt.Sprintf("consumers:%s", strings.Join(consumers, ",")))
+	}
+
 	return strings.Join(keyParts, "|")
 }
 
@@ -125,6 +137,12 @@ type RuleMatcher[PluginConfig any] struct {
 }
 
 func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
+	// Get consumer information
+	consumerName, err := proxywasm.GetProperty([]string{"consumer_name"})
+	if err != nil && err != types.ErrorStatusNotFound {
+		return nil, err
+	}
+
 	host, err := proxywasm.GetHttpRequestHeader(":authority")
 	if err != nil {
 		return nil, err
@@ -137,26 +155,37 @@ func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
 	if err != nil && err != types.ErrorStatusNotFound {
 		return nil, err
 	}
+
 	for _, rule := range m.ruleConfig {
-		// category == Host
+		// 1. Consumer matching (highest priority when consumer is present)
+		if rule.category == Consumer && string(consumerName) != "" {
+			if _, ok := rule.consumers[string(consumerName)]; ok {
+				return &rule.config, nil
+			}
+		}
+
+		// 2. Host matching
 		if rule.category == Host {
 			if m.hostMatch(rule, host) {
 				return &rule.config, nil
 			}
 		}
-		// category == Route
+
+		// 3. Route matching
 		if rule.category == Route {
 			if _, ok := rule.routes[string(routeName)]; ok {
 				return &rule.config, nil
 			}
 		}
-		// category == Service
+
+		// 4. Service matching
 		if rule.category == Service {
 			if m.serviceMatch(rule, string(serviceName)) {
 				return &rule.config, nil
 			}
 		}
-		// category == RouteAndService
+
+		// 5. RouteAndService matching
 		if rule.category == RouteAndService {
 			if _, ok := rule.routes[string(routeName)]; ok {
 				if m.serviceMatch(rule, string(serviceName)) {
@@ -164,7 +193,8 @@ func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
 				}
 			}
 		}
-		// category == RoutePrefix
+
+		// 6. RoutePrefix matching
 		if rule.category == RoutePrefix {
 			for routePrefix := range rule.routePrefixs {
 				if strings.HasPrefix(string(routeName), routePrefix) {
@@ -173,6 +203,7 @@ func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
 			}
 		}
 	}
+
 	if m.hasGlobalConfig {
 		return &m.globalConfig, nil
 	}
@@ -226,14 +257,18 @@ func (m *RuleMatcher[PluginConfig]) ParseRuleConfig(context iface.PluginContext,
 		rule.hosts = m.parseHostMatchConfig(ruleJson)
 		rule.services = m.parseServiceMatchConfig(ruleJson)
 		rule.routePrefixs = m.parseRoutePrefixMatchConfig(ruleJson)
+		rule.consumers = m.parseConsumerMatchConfig(ruleJson)
 		hasRoute := len(rule.routes) != 0
 		hasHosts := len(rule.hosts) != 0
 		hasService := len(rule.services) != 0
 		hasRoutePrefix := len(rule.routePrefixs) != 0
-		if boolToInt(hasRoute)+boolToInt(hasService)+boolToInt(hasHosts)+boolToInt(hasRoutePrefix) == 0 {
-			return errors.New("there is at least one of  '_match_route_', '_match_domain_', '_match_service_' and '_match_route_prefix_' can present in configuration.")
+		hasConsumer := len(rule.consumers) != 0
+		if boolToInt(hasRoute)+boolToInt(hasService)+boolToInt(hasHosts)+boolToInt(hasRoutePrefix)+boolToInt(hasConsumer) == 0 {
+			return errors.New("there is at least one of  '_match_route_', '_match_domain_', '_match_service_', '_match_route_prefix_' and '_match_consumer_' can present in configuration.")
 		}
-		if hasRoute {
+		if hasConsumer {
+			rule.category = Consumer
+		} else if hasRoute {
 			rule.category = Route
 			if hasService {
 				rule.category = RouteAndService
@@ -359,6 +394,18 @@ func (m RuleMatcher[PluginConfig]) parseHostMatchConfig(config gjson.Result) []H
 		hostMatchers = append(hostMatchers, hostMatcher)
 	}
 	return hostMatchers
+}
+
+func (m RuleMatcher[PluginConfig]) parseConsumerMatchConfig(config gjson.Result) map[string]struct{} {
+	keys := config.Get(MATCH_CONSUMER_KEY).Array()
+	consumers := make(map[string]struct{})
+	for _, item := range keys {
+		consumerName := item.String()
+		if consumerName != "" {
+			consumers[consumerName] = struct{}{}
+		}
+	}
+	return consumers
 }
 
 func stripPortFromHost(reqHost string) string {
