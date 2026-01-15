@@ -4,9 +4,11 @@ go 1.24.1
 
 toolchain go1.24.4
 
+replace github.com/higress-group/wasm-go => github.com/ISADBA/wasm-go v1.0.9-alpha
+
 require (
 	github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56
-	github.com/higress-group/proxy-wasm-go-sdk v0.0.0-20250822030947-8345453fddd0
+	github.com/higress-group/proxy-wasm-go-sdk v0.0.0-20251103120604-77e9cce339d2
 	github.com/higress-group/wasm-go v1.0.2-0.20250821081215-b573359becf8
 	github.com/stretchr/testify v1.9.0
 	github.com/tidwall/gjson v1.18.0
