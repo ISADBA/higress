@@ -4,7 +4,7 @@ go 1.24.1
 
 toolchain go1.24.4
 
-replace github.com/higress-group/wasm-go => github.com/ISADBA/wasm-go v1.0.9-consumer-support
+replace github.com/higress-group/wasm-go => github.com/ISADBA/wasm-go v1.0.9-consumer-support-v2
 
 require (
 	github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56

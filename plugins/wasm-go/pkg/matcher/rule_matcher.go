@@ -137,8 +137,8 @@ type RuleMatcher[PluginConfig any] struct {
 }
 
 func (m RuleMatcher[PluginConfig]) GetMatchConfig() (*PluginConfig, error) {
-	// Get consumer information
-	consumerName, err := proxywasm.GetProperty([]string{"consumer_name"})
+	// Get consumer information from request header
+	consumerName, err := proxywasm.GetHttpRequestHeader("x-mse-consumer")
 	if err != nil && err != types.ErrorStatusNotFound {
 		return nil, err
 	}

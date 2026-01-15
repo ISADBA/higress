@@ -1,5 +1,5 @@
-github.com/ISADBA/wasm-go v1.0.9-consumer-support h1:9fL+cI7MjmVdkadd1fDJozvZRf3/Cq530DssBCB9H7g=
-github.com/ISADBA/wasm-go v1.0.9-consumer-support/go.mod h1:uKVYICbRaxTlKqdm8E0dpjbysxM8uCPb9LV26hF3Km8=
+github.com/ISADBA/wasm-go v1.0.9-consumer-support-v2 h1:F74QhaFgVICcoSyng2kl0u9sEiHtc/Ic3MRdtaSX/fY=
+github.com/ISADBA/wasm-go v1.0.9-consumer-support-v2/go.mod h1:uKVYICbRaxTlKqdm8E0dpjbysxM8uCPb9LV26hF3Km8=
 github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56 h1:Wi5Tgn8K+jDcBYL+dIMS1+qXYH2r7tpRAyBgqrWfQtw=
 github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56/go.mod h1:8BhOLuqtSuT5NZtZMwfvEibi09RO3u79uqfHZzfDTR4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
