@@ -1,21 +1,22 @@
 apiVersion: extensions.higress.io/v1alpha1
 kind: WasmPlugin
 metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"extensions.higress.io/v1alpha1","kind":"WasmPlugin","metadata":{"annotations":{},"name":"scope-priority-test-global-only","namespace":"higress-system"},"spec":{"defaultConfig":{"enableRequestBody":true,"enableRequestHeaders":true,"enableResponseBody":true,"enableResponseHeaders":true,"message":"[TEST-01] Global config only - should apply to all requests","priority":1,"scopeType":"GLOBAL"},"defaultConfigDisable":false,"imagePullSecret":"isadba-registry-secret","phase":"UNSPECIFIED_PHASE","priority":0,"url":"crpi-0vih3w2g8se3zbl8.cn-hangzhou.personal.cr.aliyuncs.com/ociplugins/scope-priority-test:1.0.3-alpha"}}
   name: scope-priority-test-global-only
   namespace: higress-system
 spec:
-  # 测试场景 1: 只有 GLOBAL 配置
-  # 预期结果: 所有请求都使用 GLOBAL 配置
   defaultConfig:
-    scopeType: GLOBAL
-    message: "[TEST-01] Global config only - should apply to all requests"
-    priority: 1
-    enableRequestHeaders: true
-    enableResponseHeaders: true
     enableRequestBody: true
+    enableRequestHeaders: true
     enableResponseBody: true
-  
+    enableResponseHeaders: true
+    message: '[TEST-01] Global config only - should apply to all requests'
+    priority: 1
+    scopeType: GLOBAL
   defaultConfigDisable: false
+  imagePullSecret: isadba-registry-secret
   phase: UNSPECIFIED_PHASE
   priority: 0
-  url: oci://your-registry/scope-priority-test:1.0.0
+  url: crpi-0vih3w2g8se3zbl8.cn-hangzhou.personal.cr.aliyuncs.com/ociplugins/scope-priority-test:1.0.3-alpha
