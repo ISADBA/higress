@@ -481,7 +481,12 @@ func extractProvider(ctx wrapper.HttpContext) string {
 		return provider
 	}
 
-	return "unknown"
+	// Try to get from route name
+	if routeName, err := proxywasm.GetProperty([]string{"route_name"}); err == nil && len(routeName) > 0 {
+		return string(routeName)
+	}
+
+	return "default"
 }
 
 // deductCost deducts the cost from the user's balance
@@ -513,24 +518,13 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	err = config.billingClient.Post(path, [][2]string{
 		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
-		log.Infof("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
 			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
 				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
-
-			// Determine error message based on status code
-			errorMsg := config.FailCostMessage
-			errorStatus := http.StatusServiceUnavailable
-
-			// If it's a 400 error, it's likely a configuration issue (pricing not found)
-			if statusCode == http.StatusBadRequest {
-				errorMsg = fmt.Sprintf("Billing configuration error: %s", string(responseBody))
-				errorStatus = http.StatusInternalServerError
-			}
-
-			sendErrorResponse(errorStatus, errorMsg)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 			return
 		}
 
