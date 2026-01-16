@@ -210,6 +210,8 @@ func maskApiKey(apiKey string) string {
 }
 
 // sendErrorResponse sends an error response to the client
+// Can be used in both request and response phases
+// When response is paused, this will send the error and the response won't be resumed
 func sendErrorResponse(statusCode int, message string) {
 	errorBody := fmt.Sprintf(`{"error":{"message":"%s","type":"billing_error"}}`, message)
 	_ = proxywasm.SendHttpResponseWithDetail(uint32(statusCode), "ai-billing.error", [][2]string{
@@ -262,7 +264,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	err = config.billingClient.Post(path, [][2]string{
 		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
-		log.Debugf("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+		log.Infof("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
@@ -414,7 +416,7 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	if !ok || billingInfo == nil {
 		log.Errorf("[%s] failed to extract billing info from stream", pluginName)
 		// FAIL_CLOSE: Block response if we cannot extract billing information
-		// Send error response and return nil to block the stream
+		// This is a critical error that indicates the response format is invalid
 		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information from stream")
 		return nil
 	}
@@ -435,21 +437,13 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	log.Infof("[%s] extracted billing info from stream: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
 		pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.Model, billingInfo.Provider)
 
-	// Deduct cost - this will pause the response until billing completes
-	// CRITICAL: The deductCost callback handles success/failure and will either:
-	// - Resume the response on success (proxywasm.ResumeHttpResponse)
-	// - Send error response on failure (sendErrorResponse)
-	// In streaming mode, we must return nil here to prevent data from being sent
-	// before billing verification completes
-	action := deductCost(ctx, config, billingInfo, apiKey)
-	if action == types.ActionPause {
-		// FAIL_CLOSE: Return nil to block stream until billing verification completes
-		// The callback will either resume or send error
-		return nil
-	}
+	// Deduct cost asynchronously - in streaming mode, we don't pause the response
+	// because the stream has already been sent to the client
+	// We just fire the billing request and let the stream continue
+	deductCostAsync(ctx, config, billingInfo, apiKey)
 
-	// If deductCost didn't pause (error case), return nil to block response
-	return nil
+	// Return data to continue the stream
+	return data
 }
 
 // extractRequestID extracts the request ID from request headers or response body
@@ -485,6 +479,7 @@ func extractProvider(ctx wrapper.HttpContext) string {
 }
 
 // deductCost deducts the cost from the user's balance
+// Used in non-streaming mode where we can pause and block the response
 func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *BillingInfo, apiKey string) types.Action {
 	log.Debugf("[%s] deducting cost for apikey=%s", pluginName, maskApiKey(apiKey))
 
@@ -513,7 +508,7 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	err = config.billingClient.Post(path, [][2]string{
 		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
-		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+		log.Infof("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
@@ -558,4 +553,69 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	log.Debugf("[%s] cost deduction request sent, pausing response", pluginName)
 	// Pause processing until callback completes
 	return types.ActionPause
+}
+
+// deductCostAsync deducts the cost from the user's balance asynchronously
+// Used in streaming mode where we cannot pause the response
+// Errors are logged but do not block the response
+func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, billingInfo *BillingInfo, apiKey string) {
+	log.Debugf("[%s] deducting cost asynchronously for apikey=%s", pluginName, maskApiKey(apiKey))
+
+	// Build request body
+	requestBody := CostRequest{
+		ApiKey:       apiKey,
+		InputTokens:  billingInfo.InputTokens,
+		OutputTokens: billingInfo.OutputTokens,
+		ModelName:    billingInfo.Model,
+		Provider:     billingInfo.Provider,
+		RequestID:    billingInfo.RequestID,
+	}
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Errorf("[%s] failed to marshal cost request: %v", pluginName, err)
+		return
+	}
+
+	// Make async HTTP call to billing service
+	path := "/v1/cost"
+
+	log.Debugf("[%s] sending async cost deduction request: path=%s body=%s", pluginName, path, string(bodyBytes))
+
+	err = config.billingClient.Post(path, [][2]string{
+		{"content-type", "application/json"},
+	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		log.Infof("[%s] async cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+
+		// Handle response in callback
+		if statusCode != http.StatusOK {
+			log.Errorf("[%s] async cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
+			return
+		}
+
+		// Parse response
+		var costResp CostResponse
+		if err := json.Unmarshal(responseBody, &costResp); err != nil {
+			log.Errorf("[%s] failed to parse async cost response: apikey=%s requestId=%s error=%v body=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err, string(responseBody))
+			return
+		}
+
+		log.Infof("[%s] async cost deduction: apikey=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
+
+		// Check if cost deduction was successful
+		if !costResp.Success {
+			log.Warnf("[%s] async cost deduction failed: apikey=%s requestId=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID)
+			return
+		}
+
+		log.Debugf("[%s] async cost deduction successful", pluginName)
+	}, 5000) // 5 second timeout
+
+	if err != nil {
+		log.Errorf("[%s] failed to send async cost deduction request: apikey=%s requestId=%s path=%s error=%v",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, path, err)
+	}
 }
