@@ -52,6 +52,7 @@ type BillingConfig struct {
 // BillingServiceConfig holds the billing service connection details
 type BillingServiceConfig struct {
 	ServiceAddress string `yaml:"serviceAddress"`
+	Namespace      string `yaml:"namespace"`
 	Protocol       string `yaml:"protocol"`
 	Port           int    `yaml:"port"`
 }
@@ -113,6 +114,13 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 	config.BillingService.ServiceAddress = serviceAddress
 
+	// Parse namespace with default
+	namespace := billingService.Get("namespace").String()
+	if namespace == "" {
+		namespace = "higress-system"
+	}
+	config.BillingService.Namespace = namespace
+
 	// Parse protocol with default
 	protocol := billingService.Get("protocol").String()
 	if protocol == "" {
@@ -144,13 +152,14 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
-		FQDN: serviceAddress,
-		Port: int64(port),
+	config.billingClient = wrapper.NewClusterClient(wrapper.K8sCluster{
+		ServiceName: config.BillingService.ServiceAddress,
+		Namespace:   config.BillingService.Namespace,
+		Port:        int64(port),
 	})
 
-	log.Infof("[%s] configuration parsed successfully: service=%s://%s:%d",
-		pluginName, protocol, serviceAddress, port)
+	log.Infof("[%s] configuration parsed successfully: service=%s://%s.%s:%d",
+		pluginName, protocol, config.BillingService.ServiceAddress, config.BillingService.Namespace, port)
 
 	return nil
 }

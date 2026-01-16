@@ -6,6 +6,7 @@ metadata:
 spec:
   defaultConfig:
     billingService:
+      namespace: higress-system
       serviceAddress: billing-service
       protocol: http
       port: 8888
