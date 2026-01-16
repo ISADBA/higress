@@ -160,7 +160,7 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.11-alpha service=%s://%s.%s:%d cluster=%s",
+	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s.%s:%d cluster=%s",
 		pluginName, protocol, config.BillingService.ServiceAddress, config.BillingService.Namespace, port, clusterName)
 
 	return nil
@@ -479,11 +479,6 @@ func extractProvider(ctx wrapper.HttpContext) string {
 	// Priority 1: Try to get from X-AI-Provider header (set by ai-proxy plugin)
 	if provider, err := proxywasm.GetHttpRequestHeader("X-AI-Provider"); err == nil && provider != "" {
 		return provider
-	}
-
-	// Try to get from route name
-	if routeName, err := proxywasm.GetProperty([]string{"route_name"}); err == nil && len(routeName) > 0 {
-		return string(routeName)
 	}
 
 	return "default"
