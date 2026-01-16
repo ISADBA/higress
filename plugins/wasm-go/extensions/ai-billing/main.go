@@ -257,7 +257,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	log.Debugf("[%s] sending balance check request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
 	err = config.billingClient.Post(path, [][2]string{
-		{"Content-Type", "application/json"},
+		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Debugf("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
@@ -513,7 +513,7 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	log.Debugf("[%s] sending cost deduction request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
 	err = config.billingClient.Post(path, [][2]string{
-		{"Content-Type", "application/json"},
+		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
