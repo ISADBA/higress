@@ -476,14 +476,9 @@ func extractRequestID(ctx wrapper.HttpContext, data []byte) string {
 
 // extractProvider extracts the provider information from context or route
 func extractProvider(ctx wrapper.HttpContext) string {
-	// Try to get from route name
-	if routeName, err := proxywasm.GetProperty([]string{"route_name"}); err == nil && len(routeName) > 0 {
-		return string(routeName)
-	}
-
-	// Try to get from cluster name
-	if clusterName, err := proxywasm.GetProperty([]string{"cluster_name"}); err == nil && len(clusterName) > 0 {
-		return string(clusterName)
+	// Priority 1: Try to get from X-AI-Provider header (set by ai-proxy plugin)
+	if provider, err := proxywasm.GetHttpRequestHeader("X-AI-Provider"); err == nil && provider != "" {
+		return provider
 	}
 
 	return "unknown"
@@ -518,13 +513,24 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	err = config.billingClient.Post(path, [][2]string{
 		{"content-type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
-		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+		log.Infof("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
 			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
 				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
-			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
+
+			// Determine error message based on status code
+			errorMsg := config.FailCostMessage
+			errorStatus := http.StatusServiceUnavailable
+
+			// If it's a 400 error, it's likely a configuration issue (pricing not found)
+			if statusCode == http.StatusBadRequest {
+				errorMsg = fmt.Sprintf("Billing configuration error: %s", string(responseBody))
+				errorStatus = http.StatusInternalServerError
+			}
+
+			sendErrorResponse(errorStatus, errorMsg)
 			return
 		}
 

@@ -187,6 +187,9 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 
 	log.Debugf("[onHttpRequestHeader] provider=%s", activeProvider.GetProviderType())
 
+	// Set provider information in header for downstream plugins (e.g., ai-billing)
+	_ = proxywasm.AddHttpRequestHeader("X-AI-Provider", string(activeProvider.GetProviderType()))
+
 	// Disable the route re-calculation since the plugin may modify some headers related to the chosen route.
 	ctx.DisableReroute()
 
