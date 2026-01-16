@@ -1,0 +1,20 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-billing
+  namespace: higress-system
+spec:
+  defaultConfig:
+    billingService:
+      serviceAddress: billing-service
+      protocol: http
+      port: 8888
+    failBalanceMessage: "503 Billing Service Balance Unavailable"
+    insufficientBalanceMessage: "余额不足"
+    failCostMessage: "503 Billing Service Cost Unavailable"
+  defaultConfigDisable: false
+  failStrategy: FAIL_CLOSE --只允许这个处理方式，计费失败需要返回相关的异常信息
+  imagePullPolicy: UNSPECIFIED_POLICY
+  phase: UNSPECIFIED_PHASE
+  priority: 200 --希望在认证之后，ai-proxy转发之前处理，看看是否需要调整
+  url: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-billing:1.0.0

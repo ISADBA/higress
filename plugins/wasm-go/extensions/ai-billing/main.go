@@ -1,0 +1,544 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/higress-group/wasm-go/pkg/tokenusage"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/gjson"
+)
+
+const (
+	pluginName = "ai-billing"
+)
+
+// Context keys for storing data across request lifecycle
+const (
+	CtxKeyApiKey      = "ai-billing-api-key"
+	CtxKeyBillingInfo = "ai-billing-info"
+	CtxKeyIsStreaming = "ai-billing-is-streaming"
+)
+
+func main() {}
+
+func init() {
+	wrapper.SetCtx(
+		pluginName,
+		wrapper.ParseConfig(parseConfig),
+		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
+		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
+		wrapper.ProcessResponseBody(onHttpResponseBody),
+		wrapper.ProcessStreamingResponseBody(onHttpStreamingResponseBody),
+	)
+}
+
+// BillingConfig holds the plugin configuration
+type BillingConfig struct {
+	BillingService             BillingServiceConfig `yaml:"billingService"`
+	FailBalanceMessage         string               `yaml:"failBalanceMessage"`
+	InsufficientBalanceMessage string               `yaml:"insufficientBalanceMessage"`
+	FailCostMessage            string               `yaml:"failCostMessage"`
+	billingClient              wrapper.HttpClient
+}
+
+// BillingServiceConfig holds the billing service connection details
+type BillingServiceConfig struct {
+	ServiceAddress string `yaml:"serviceAddress"`
+	Protocol       string `yaml:"protocol"`
+	Port           int    `yaml:"port"`
+}
+
+// BalanceRequest represents the request to check user balance
+type BalanceRequest struct {
+	ApiKey string `json:"apikey"`
+}
+
+// BalanceResponse represents the response from balance check
+type BalanceResponse struct {
+	Balance   string `json:"balance"`
+	UID       int64  `json:"uid"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// CostRequest represents the request to deduct cost
+type CostRequest struct {
+	ApiKey       string `json:"apikey"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	ModelName    string `json:"model_name"`
+	Provider     string `json:"provider"`
+	RequestID    string `json:"request_id"`
+}
+
+// CostResponse represents the response from cost deduction
+type CostResponse struct {
+	BillingEventID   int64  `json:"billing_event_id"`
+	Cost             string `json:"cost"`
+	CostActual       string `json:"cost_actual"`
+	DiscountRatio    string `json:"discount_ratio"`
+	RemainingBalance string `json:"remaining_balance"`
+	Success          bool   `json:"success"`
+}
+
+// BillingInfo holds the billing information extracted from LLM response
+type BillingInfo struct {
+	InputTokens  int64
+	OutputTokens int64
+	Model        string
+	Provider     string
+	RequestID    string
+}
+
+// parseConfig parses the plugin configuration
+func parseConfig(json gjson.Result, config *BillingConfig) error {
+	log.Infof("[%s] parsing configuration", pluginName)
+
+	// Parse billing service configuration
+	billingService := json.Get("billingService")
+	if !billingService.Exists() {
+		return errors.New("missing billingService in config")
+	}
+
+	serviceAddress := billingService.Get("serviceAddress").String()
+	if serviceAddress == "" {
+		return errors.New("billingService.serviceAddress must not be empty")
+	}
+	config.BillingService.ServiceAddress = serviceAddress
+
+	// Parse protocol with default
+	protocol := billingService.Get("protocol").String()
+	if protocol == "" {
+		protocol = "http"
+	}
+	config.BillingService.Protocol = protocol
+
+	// Parse port with default
+	port := int(billingService.Get("port").Int())
+	if port == 0 {
+		port = 8888
+	}
+	config.BillingService.Port = port
+
+	// Parse error messages with defaults
+	config.FailBalanceMessage = json.Get("failBalanceMessage").String()
+	if config.FailBalanceMessage == "" {
+		config.FailBalanceMessage = "503 Billing Service Balance Unavailable"
+	}
+
+	config.InsufficientBalanceMessage = json.Get("insufficientBalanceMessage").String()
+	if config.InsufficientBalanceMessage == "" {
+		config.InsufficientBalanceMessage = "余额不足"
+	}
+
+	config.FailCostMessage = json.Get("failCostMessage").String()
+	if config.FailCostMessage == "" {
+		config.FailCostMessage = "503 Billing Service Cost Unavailable"
+	}
+
+	// Initialize HTTP client for billing service
+	config.billingClient = wrapper.NewClusterClient(wrapper.DnsCluster{
+		ServiceName: serviceAddress,
+		Port:        int64(port),
+	})
+
+	log.Infof("[%s] configuration parsed successfully: service=%s://%s:%d",
+		pluginName, protocol, serviceAddress, port)
+
+	return nil
+}
+
+// extractApiKey extracts the API key from request headers
+func extractApiKey(ctx wrapper.HttpContext) (string, error) {
+	// Try x-hi-original-auth first
+	apiKey, err := proxywasm.GetHttpRequestHeader("x-hi-original-auth")
+	if err == nil && apiKey != "" {
+		// Remove "Bearer " prefix if present
+		apiKey = strings.TrimSpace(strings.TrimPrefix(apiKey, "Bearer"))
+		if apiKey != "" && apiKey != "Bearer" {
+			return apiKey, nil
+		}
+	}
+
+	// Fall back to Authorization header (try both cases since HTTP headers are case-insensitive)
+	apiKey, err = proxywasm.GetHttpRequestHeader("Authorization")
+	if err == nil && apiKey != "" {
+		// Remove "Bearer " prefix if present
+		apiKey = strings.TrimSpace(strings.TrimPrefix(apiKey, "Bearer"))
+		if apiKey != "" && apiKey != "Bearer" {
+			return apiKey, nil
+		}
+	}
+
+	// Try lowercase authorization as fallback
+	apiKey, err = proxywasm.GetHttpRequestHeader("authorization")
+	if err == nil && apiKey != "" {
+		// Remove "Bearer " prefix if present
+		apiKey = strings.TrimSpace(strings.TrimPrefix(apiKey, "Bearer"))
+		if apiKey != "" && apiKey != "Bearer" {
+			return apiKey, nil
+		}
+	}
+
+	return "", errors.New("API key not found in request headers")
+}
+
+// maskApiKey masks the API key for logging (show only first 8 characters)
+func maskApiKey(apiKey string) string {
+	if len(apiKey) <= 8 {
+		return apiKey + "***"
+	}
+	return apiKey[:8] + "***"
+}
+
+// sendErrorResponse sends an error response to the client
+func sendErrorResponse(statusCode int, message string) {
+	errorBody := fmt.Sprintf(`{"error":{"message":"%s","type":"billing_error"}}`, message)
+	proxywasm.SendHttpResponse(uint32(statusCode), [][2]string{
+		{"content-type", "application/json"},
+	}, []byte(errorBody), -1)
+}
+
+// onHttpRequestHeaders handles the request headers phase
+func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.Action {
+	log.Debugf("[%s] processing request headers", pluginName)
+
+	// Extract API key
+	apiKey, err := extractApiKey(ctx)
+	if err != nil {
+		log.Warnf("[%s] failed to extract API key: %v", pluginName, err)
+		sendErrorResponse(http.StatusUnauthorized, "Missing API Key")
+		return types.ActionContinue
+	}
+
+	// Store API key in context
+	ctx.SetContext(CtxKeyApiKey, apiKey)
+	log.Debugf("[%s] API key extracted: %s", pluginName, maskApiKey(apiKey))
+
+	// Check balance
+	return checkBalance(ctx, config, apiKey)
+}
+
+// checkBalance checks the user's balance with the billing service
+func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) types.Action {
+	log.Debugf("[%s] checking balance for apikey=%s", pluginName, maskApiKey(apiKey))
+
+	// Build request body
+	requestBody := BalanceRequest{
+		ApiKey: apiKey,
+	}
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Errorf("[%s] failed to marshal balance request: %v", pluginName, err)
+		sendErrorResponse(http.StatusInternalServerError, config.FailBalanceMessage)
+		return types.ActionContinue
+	}
+
+	// Make async HTTP call to billing service
+	url := fmt.Sprintf("%s://%s:%d/v1/amount",
+		config.BillingService.Protocol,
+		config.BillingService.ServiceAddress,
+		config.BillingService.Port)
+
+	err = config.billingClient.Post(url, [][2]string{
+		{"Content-Type", "application/json"},
+	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		// Handle response in callback
+		if statusCode != http.StatusOK {
+			log.Errorf("[%s] balance check failed: apikey=%s status=%d",
+				pluginName, maskApiKey(apiKey), statusCode)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			return
+		}
+
+		// Parse response
+		var balanceResp BalanceResponse
+		if err := json.Unmarshal(responseBody, &balanceResp); err != nil {
+			log.Errorf("[%s] failed to parse balance response: apikey=%s error=%v",
+				pluginName, maskApiKey(apiKey), err)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			return
+		}
+
+		// Parse balance as float
+		balance, err := strconv.ParseFloat(balanceResp.Balance, 64)
+		if err != nil {
+			log.Errorf("[%s] failed to parse balance value: apikey=%s balance=%s error=%v",
+				pluginName, maskApiKey(apiKey), balanceResp.Balance, err)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			return
+		}
+
+		log.Infof("[%s] balance check: apikey=%s balance=%s", pluginName, maskApiKey(apiKey), balanceResp.Balance)
+
+		// Check if balance is sufficient
+		if balance <= 0 {
+			log.Warnf("[%s] insufficient balance: apikey=%s balance=%s",
+				pluginName, maskApiKey(apiKey), balanceResp.Balance)
+			sendErrorResponse(http.StatusPaymentRequired, config.InsufficientBalanceMessage)
+			return
+		}
+
+		// Balance is sufficient, resume request
+		proxywasm.ResumeHttpRequest()
+	}, 5000) // 5 second timeout
+
+	if err != nil {
+		log.Errorf("[%s] failed to send balance check request: apikey=%s error=%v",
+			pluginName, maskApiKey(apiKey), err)
+		sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+		return types.ActionContinue
+	}
+
+	// Pause processing until callback completes
+	return types.ActionPause
+}
+
+// onHttpResponseHeaders handles the response headers phase
+func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.Action {
+	log.Debugf("[%s] processing response headers", pluginName)
+
+	// Check HTTP status code
+	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
+	if err != nil || statusCode != "200" {
+		log.Debugf("[%s] skipping billing for non-200 response: status=%s", pluginName, statusCode)
+		return types.ActionContinue
+	}
+
+	// Detect streaming vs non-streaming response
+	contentType, _ := proxywasm.GetHttpResponseHeader("content-type")
+	isStreaming := strings.Contains(contentType, "text/event-stream")
+	ctx.SetContext(CtxKeyIsStreaming, isStreaming)
+
+	if isStreaming {
+		log.Debugf("[%s] detected streaming response", pluginName)
+	} else {
+		log.Debugf("[%s] detected non-streaming response, buffering body", pluginName)
+		ctx.BufferResponseBody()
+	}
+
+	return types.ActionContinue
+}
+
+// onHttpResponseBody handles the non-streaming response body
+func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []byte) types.Action {
+	log.Debugf("[%s] processing response body", pluginName)
+
+	// Extract token usage
+	usage := tokenusage.GetTokenUsage(ctx, body)
+	if usage.TotalToken == 0 {
+		log.Errorf("[%s] failed to extract token usage from response", pluginName)
+		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information")
+		return types.ActionContinue
+	}
+
+	// Extract request ID (from request header or response body)
+	requestID := extractRequestID(ctx, body)
+
+	// Extract provider
+	provider := extractProvider(ctx)
+
+	// Get API key from context
+	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
+	if !ok {
+		log.Errorf("[%s] failed to get API key from context", pluginName)
+		sendErrorResponse(http.StatusInternalServerError, "Internal error")
+		return types.ActionContinue
+	}
+
+	log.Infof("[%s] extracted billing info: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
+		pluginName, maskApiKey(apiKey), requestID, usage.InputToken, usage.OutputToken, usage.Model, provider)
+
+	// Deduct cost
+	billingInfo := &BillingInfo{
+		InputTokens:  usage.InputToken,
+		OutputTokens: usage.OutputToken,
+		Model:        usage.Model,
+		Provider:     provider,
+		RequestID:    requestID,
+	}
+
+	return deductCost(ctx, config, billingInfo, apiKey)
+}
+
+// onHttpStreamingResponseBody handles the streaming response body
+func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, data []byte, endOfStream bool) []byte {
+	// Call GetTokenUsage on each chunk
+	usage := tokenusage.GetTokenUsage(ctx, data)
+	if usage.TotalToken > 0 {
+		log.Debugf("[%s] extracted token usage from stream: inputTokens=%d outputTokens=%d",
+			pluginName, usage.InputToken, usage.OutputToken)
+
+		// Store billing info in context
+		billingInfo := &BillingInfo{
+			InputTokens:  usage.InputToken,
+			OutputTokens: usage.OutputToken,
+			Model:        usage.Model,
+		}
+		ctx.SetContext(CtxKeyBillingInfo, billingInfo)
+	}
+
+	// If not end of stream, continue
+	if !endOfStream {
+		return data
+	}
+
+	// At end of stream, deduct cost if we have billing info
+	billingInfo, ok := ctx.GetContext(CtxKeyBillingInfo).(*BillingInfo)
+	if !ok || billingInfo == nil {
+		log.Errorf("[%s] failed to extract billing info from stream", pluginName)
+		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information from stream")
+		// CRITICAL FIX: Return data instead of nil to avoid data loss
+		// The error response will be sent but we should not drop the stream data
+		// Note: In FAIL_CLOSE mode, we should block the response, so return nil is correct
+		return nil
+	}
+
+	// Extract request ID and provider
+	billingInfo.RequestID = extractRequestID(ctx, data)
+	billingInfo.Provider = extractProvider(ctx)
+
+	// Get API key from context
+	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
+	if !ok {
+		log.Errorf("[%s] failed to get API key from context", pluginName)
+		sendErrorResponse(http.StatusInternalServerError, "Internal error")
+		// FAIL_CLOSE: Block response on internal error
+		return nil
+	}
+
+	log.Infof("[%s] extracted billing info from stream: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
+		pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.Model, billingInfo.Provider)
+
+	// Deduct cost - this will pause the response until billing completes
+	// CRITICAL: The deductCost callback handles success/failure and will either:
+	// - Resume the response on success (proxywasm.ResumeHttpResponse)
+	// - Send error response on failure (sendErrorResponse)
+	// In streaming mode, we must return nil here to prevent data from being sent
+	// before billing verification completes
+	action := deductCost(ctx, config, billingInfo, apiKey)
+	if action == types.ActionPause {
+		// FAIL_CLOSE: Return nil to block stream until billing verification completes
+		// The callback will either resume or send error
+		return nil
+	}
+
+	// If deductCost didn't pause (error case), return nil to block response
+	return nil
+}
+
+// extractRequestID extracts the request ID from request headers or response body
+func extractRequestID(ctx wrapper.HttpContext, data []byte) string {
+	// Priority 1: Try to get from request header x-request-id
+	if requestID, err := proxywasm.GetHttpRequestHeader("x-request-id"); err == nil && requestID != "" {
+		return requestID
+	}
+
+	// Priority 2: Try to extract from response body
+	if requestID := wrapper.GetValueFromBody(data, []string{
+		"id",
+		"response.id",
+		"responseId",
+		"message.id",
+	}); requestID != nil {
+		return requestID.String()
+	}
+
+	// Priority 3: Return empty string if not found
+	// The billing service should handle missing request IDs
+	return ""
+}
+
+// extractProvider extracts the provider information from context or route
+func extractProvider(ctx wrapper.HttpContext) string {
+	// Try to get from route name
+	if routeName, err := proxywasm.GetProperty([]string{"route_name"}); err == nil && len(routeName) > 0 {
+		return string(routeName)
+	}
+
+	// Try to get from cluster name
+	if clusterName, err := proxywasm.GetProperty([]string{"cluster_name"}); err == nil && len(clusterName) > 0 {
+		return string(clusterName)
+	}
+
+	return "unknown"
+}
+
+// deductCost deducts the cost from the user's balance
+func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *BillingInfo, apiKey string) types.Action {
+	log.Debugf("[%s] deducting cost for apikey=%s", pluginName, maskApiKey(apiKey))
+
+	// Build request body
+	requestBody := CostRequest{
+		ApiKey:       apiKey,
+		InputTokens:  billingInfo.InputTokens,
+		OutputTokens: billingInfo.OutputTokens,
+		ModelName:    billingInfo.Model,
+		Provider:     billingInfo.Provider,
+		RequestID:    billingInfo.RequestID,
+	}
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Errorf("[%s] failed to marshal cost request: %v", pluginName, err)
+		sendErrorResponse(http.StatusInternalServerError, config.FailCostMessage)
+		return types.ActionContinue
+	}
+
+	// Make async HTTP call to billing service
+	url := fmt.Sprintf("%s://%s:%d/v1/cost",
+		config.BillingService.Protocol,
+		config.BillingService.ServiceAddress,
+		config.BillingService.Port)
+
+	err = config.billingClient.Post(url, [][2]string{
+		{"Content-Type", "application/json"},
+	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		// Handle response in callback
+		if statusCode != http.StatusOK {
+			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
+			return
+		}
+
+		// Parse response
+		var costResp CostResponse
+		if err := json.Unmarshal(responseBody, &costResp); err != nil {
+			log.Errorf("[%s] failed to parse cost response: apikey=%s requestId=%s error=%v",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err)
+			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
+			return
+		}
+
+		log.Infof("[%s] cost deduction: apikey=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
+
+		// Check if cost deduction was successful
+		if !costResp.Success {
+			log.Warnf("[%s] cost deduction failed: apikey=%s requestId=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID)
+			sendErrorResponse(http.StatusPaymentRequired, config.InsufficientBalanceMessage)
+			return
+		}
+
+		// Cost deduction successful, resume response
+		proxywasm.ResumeHttpResponse()
+	}, 5000) // 5 second timeout
+
+	if err != nil {
+		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s error=%v",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, err)
+		sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
+		return types.ActionContinue
+	}
+
+	// Pause processing until callback completes
+	return types.ActionPause
+}
