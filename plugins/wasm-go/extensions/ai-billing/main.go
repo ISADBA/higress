@@ -129,11 +129,11 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	config.BillingService.Protocol = protocol
 
 	// Parse port with default
-	port := int(billingService.Get("port").Int())
+	port := billingService.Get("port").Int()
 	if port == 0 {
 		port = 8888
 	}
-	config.BillingService.Port = port
+	config.BillingService.Port = int(port)
 
 	// Parse error messages with defaults
 	config.FailBalanceMessage = json.Get("failBalanceMessage").String()
@@ -152,17 +152,16 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	// Use FQDNCluster to directly specify the service FQDN
-	serviceFQDN := fmt.Sprintf("%s.%s.svc.cluster.local", config.BillingService.ServiceAddress, config.BillingService.Namespace)
-	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
-		FQDN: serviceFQDN,
-		Host: serviceFQDN,
-		Port: int64(port),
+	// Use K8sCluster - requires Higress global config: onlyPushRouteCluster: false
+	config.billingClient = wrapper.NewClusterClient(wrapper.K8sCluster{
+		ServiceName: config.BillingService.ServiceAddress,
+		Namespace:   config.BillingService.Namespace,
+		Port:        port,
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.7-alpha service=%s://%s:%d cluster=%s",
-		pluginName, protocol, serviceFQDN, port, clusterName)
+	log.Infof("[%s] configuration parsed successfully: version=1.0.11-alpha service=%s://%s.%s:%d cluster=%s",
+		pluginName, protocol, config.BillingService.ServiceAddress, config.BillingService.Namespace, port, clusterName)
 
 	return nil
 }
@@ -257,7 +256,8 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	// Note: Post() expects only the path, not the full URL
 	path := "/v1/amount"
 
-	log.Debugf("[%s] sending balance check request: path=%s body=%s", pluginName, path, string(bodyBytes))
+	clusterName := config.billingClient.ClusterName()
+	log.Infof("[%s] sending balance check request: cluster=%s path=%s body=%s", pluginName, clusterName, path, string(bodyBytes))
 
 	err = config.billingClient.Post(path, [][2]string{
 		{"content-type", "application/json"},
