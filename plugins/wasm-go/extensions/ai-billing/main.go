@@ -152,17 +152,17 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	// Use DnsCluster instead of K8sCluster to avoid cluster discovery issues
-	serviceDomain := fmt.Sprintf("%s.%s.svc.cluster.local", config.BillingService.ServiceAddress, config.BillingService.Namespace)
-	config.billingClient = wrapper.NewClusterClient(wrapper.DnsCluster{
-		ServiceName: config.BillingService.ServiceAddress,
-		Domain:      serviceDomain,
-		Port:        int64(port),
+	// Use FQDNCluster to directly specify the service FQDN
+	serviceFQDN := fmt.Sprintf("%s.%s.svc.cluster.local", config.BillingService.ServiceAddress, config.BillingService.Namespace)
+	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
+		FQDN: serviceFQDN,
+		Host: serviceFQDN,
+		Port: int64(port),
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.6-alpha service=%s://%s:%d cluster=%s domain=%s",
-		pluginName, protocol, serviceDomain, port, clusterName, serviceDomain)
+	log.Infof("[%s] configuration parsed successfully: version=1.0.7-alpha service=%s://%s:%d cluster=%s",
+		pluginName, protocol, serviceFQDN, port, clusterName)
 
 	return nil
 }
