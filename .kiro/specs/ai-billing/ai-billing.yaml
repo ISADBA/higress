@@ -13,8 +13,9 @@ spec:
     insufficientBalanceMessage: "余额不足"
     failCostMessage: "503 Billing Service Cost Unavailable"
   defaultConfigDisable: false
-  failStrategy: FAIL_CLOSE --只允许这个处理方式，计费失败需要返回相关的异常信息
+  failStrategy: FAIL_CLOSE
   imagePullPolicy: UNSPECIFIED_POLICY
   phase: UNSPECIFIED_PHASE
-  priority: 200 --希望在认证之后，ai-proxy转发之前处理，看看是否需要调整
-  url: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-billing:1.0.0
+  priority: 200
+  imagePullSecret: isadba-registry-secret
+  url: oci://crpi-0vih3w2g8se3zbl8.cn-hangzhou.personal.cr.aliyuncs.com/ociplugins/ai-billing:1.0.0-alpha

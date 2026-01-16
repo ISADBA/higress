@@ -144,9 +144,9 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	config.billingClient = wrapper.NewClusterClient(wrapper.DnsCluster{
-		ServiceName: serviceAddress,
-		Port:        int64(port),
+	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
+		FQDN: serviceAddress,
+		Port: int64(port),
 	})
 
 	log.Infof("[%s] configuration parsed successfully: service=%s://%s:%d",
@@ -247,13 +247,17 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		config.BillingService.ServiceAddress,
 		config.BillingService.Port)
 
+	log.Debugf("[%s] sending balance check request: url=%s body=%s", pluginName, url, string(bodyBytes))
+
 	err = config.billingClient.Post(url, [][2]string{
 		{"Content-Type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		log.Debugf("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+
 		// Handle response in callback
 		if statusCode != http.StatusOK {
-			log.Errorf("[%s] balance check failed: apikey=%s status=%d",
-				pluginName, maskApiKey(apiKey), statusCode)
+			log.Errorf("[%s] balance check failed: apikey=%s status=%d body=%s",
+				pluginName, maskApiKey(apiKey), statusCode, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
@@ -261,8 +265,8 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		// Parse response
 		var balanceResp BalanceResponse
 		if err := json.Unmarshal(responseBody, &balanceResp); err != nil {
-			log.Errorf("[%s] failed to parse balance response: apikey=%s error=%v",
-				pluginName, maskApiKey(apiKey), err)
+			log.Errorf("[%s] failed to parse balance response: apikey=%s error=%v body=%s",
+				pluginName, maskApiKey(apiKey), err, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
@@ -287,16 +291,18 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		}
 
 		// Balance is sufficient, resume request
+		log.Debugf("[%s] balance sufficient, resuming request", pluginName)
 		proxywasm.ResumeHttpRequest()
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send balance check request: apikey=%s error=%v",
-			pluginName, maskApiKey(apiKey), err)
+		log.Errorf("[%s] failed to send balance check request: apikey=%s url=%s error=%v",
+			pluginName, maskApiKey(apiKey), url, err)
 		sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
 		return types.ActionContinue
 	}
 
+	log.Debugf("[%s] balance check request sent, pausing request", pluginName)
 	// Pause processing until callback completes
 	return types.ActionPause
 }
@@ -497,13 +503,17 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 		config.BillingService.ServiceAddress,
 		config.BillingService.Port)
 
+	log.Debugf("[%s] sending cost deduction request: url=%s body=%s", pluginName, url, string(bodyBytes))
+
 	err = config.billingClient.Post(url, [][2]string{
 		{"Content-Type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+
 		// Handle response in callback
 		if statusCode != http.StatusOK {
-			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode)
+			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 			return
 		}
@@ -511,8 +521,8 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 		// Parse response
 		var costResp CostResponse
 		if err := json.Unmarshal(responseBody, &costResp); err != nil {
-			log.Errorf("[%s] failed to parse cost response: apikey=%s requestId=%s error=%v",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err)
+			log.Errorf("[%s] failed to parse cost response: apikey=%s requestId=%s error=%v body=%s",
+				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 			return
 		}
@@ -529,16 +539,18 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 		}
 
 		// Cost deduction successful, resume response
+		log.Debugf("[%s] cost deduction successful, resuming response", pluginName)
 		proxywasm.ResumeHttpResponse()
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s error=%v",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, err)
+		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s url=%s error=%v",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, url, err)
 		sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 		return types.ActionContinue
 	}
 
+	log.Debugf("[%s] cost deduction request sent, pausing response", pluginName)
 	// Pause processing until callback completes
 	return types.ActionPause
 }
