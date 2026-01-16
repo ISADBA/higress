@@ -201,7 +201,7 @@ func maskApiKey(apiKey string) string {
 // sendErrorResponse sends an error response to the client
 func sendErrorResponse(statusCode int, message string) {
 	errorBody := fmt.Sprintf(`{"error":{"message":"%s","type":"billing_error"}}`, message)
-	proxywasm.SendHttpResponse(uint32(statusCode), [][2]string{
+	_ = proxywasm.SendHttpResponseWithDetail(uint32(statusCode), "ai-billing.error", [][2]string{
 		{"content-type", "application/json"},
 	}, []byte(errorBody), -1)
 }
@@ -242,14 +242,12 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	}
 
 	// Make async HTTP call to billing service
-	url := fmt.Sprintf("%s://%s:%d/v1/amount",
-		config.BillingService.Protocol,
-		config.BillingService.ServiceAddress,
-		config.BillingService.Port)
+	// Note: Post() expects only the path, not the full URL
+	path := "/v1/amount"
 
-	log.Debugf("[%s] sending balance check request: url=%s body=%s", pluginName, url, string(bodyBytes))
+	log.Debugf("[%s] sending balance check request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
-	err = config.billingClient.Post(url, [][2]string{
+	err = config.billingClient.Post(path, [][2]string{
 		{"Content-Type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Debugf("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
@@ -296,8 +294,8 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send balance check request: apikey=%s url=%s error=%v",
-			pluginName, maskApiKey(apiKey), url, err)
+		log.Errorf("[%s] failed to send balance check request: apikey=%s path=%s error=%v",
+			pluginName, maskApiKey(apiKey), path, err)
 		sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
 		return types.ActionContinue
 	}
@@ -341,6 +339,8 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 	usage := tokenusage.GetTokenUsage(ctx, body)
 	if usage.TotalToken == 0 {
 		log.Errorf("[%s] failed to extract token usage from response", pluginName)
+		// FAIL_CLOSE: For non-streaming responses, we can send error response
+		// because we buffered the entire response
 		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information")
 		return types.ActionContinue
 	}
@@ -355,6 +355,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
 	if !ok {
 		log.Errorf("[%s] failed to get API key from context", pluginName)
+		// FAIL_CLOSE: Send error response for internal error
 		sendErrorResponse(http.StatusInternalServerError, "Internal error")
 		return types.ActionContinue
 	}
@@ -400,10 +401,9 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	billingInfo, ok := ctx.GetContext(CtxKeyBillingInfo).(*BillingInfo)
 	if !ok || billingInfo == nil {
 		log.Errorf("[%s] failed to extract billing info from stream", pluginName)
+		// FAIL_CLOSE: Block response if we cannot extract billing information
+		// Send error response and return nil to block the stream
 		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information from stream")
-		// CRITICAL FIX: Return data instead of nil to avoid data loss
-		// The error response will be sent but we should not drop the stream data
-		// Note: In FAIL_CLOSE mode, we should block the response, so return nil is correct
 		return nil
 	}
 
@@ -415,8 +415,8 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
 	if !ok {
 		log.Errorf("[%s] failed to get API key from context", pluginName)
-		sendErrorResponse(http.StatusInternalServerError, "Internal error")
 		// FAIL_CLOSE: Block response on internal error
+		sendErrorResponse(http.StatusInternalServerError, "Internal error")
 		return nil
 	}
 
@@ -498,14 +498,12 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	}
 
 	// Make async HTTP call to billing service
-	url := fmt.Sprintf("%s://%s:%d/v1/cost",
-		config.BillingService.Protocol,
-		config.BillingService.ServiceAddress,
-		config.BillingService.Port)
+	// Note: Post() expects only the path, not the full URL
+	path := "/v1/cost"
 
-	log.Debugf("[%s] sending cost deduction request: url=%s body=%s", pluginName, url, string(bodyBytes))
+	log.Debugf("[%s] sending cost deduction request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
-	err = config.billingClient.Post(url, [][2]string{
+	err = config.billingClient.Post(path, [][2]string{
 		{"Content-Type", "application/json"},
 	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Debugf("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
@@ -544,8 +542,8 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s url=%s error=%v",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, url, err)
+		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s path=%s error=%v",
+			pluginName, maskApiKey(apiKey), billingInfo.RequestID, path, err)
 		sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 		return types.ActionContinue
 	}
