@@ -22,9 +22,10 @@ const (
 
 // Context keys for storing data across request lifecycle
 const (
-	CtxKeyApiKey      = "ai-billing-api-key"
-	CtxKeyBillingInfo = "ai-billing-info"
-	CtxKeyIsStreaming = "ai-billing-is-streaming"
+	CtxKeyApiKey        = "ai-billing-api-key"
+	CtxKeyBillingInfo   = "ai-billing-info"
+	CtxKeyIsStreaming   = "ai-billing-is-streaming"
+	CtxKeyRequestDenied = "ai-billing-request-denied"
 )
 
 func main() {}
@@ -219,6 +220,13 @@ func sendErrorResponse(statusCode int, message string) {
 	}, []byte(errorBody), -1)
 }
 
+// sendErrorResponseAndMarkDenied sends an error response and marks the request as denied
+// This is used in request phase to ensure subsequent phases don't process the request
+func sendErrorResponseAndMarkDenied(ctx wrapper.HttpContext, statusCode int, message string) {
+	ctx.SetContext(CtxKeyRequestDenied, true)
+	sendErrorResponse(statusCode, message)
+}
+
 // onHttpRequestHeaders handles the request headers phase
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.Action {
 	log.Debugf("[%s] processing request headers", pluginName)
@@ -227,7 +235,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.A
 	apiKey, err := extractApiKey(ctx)
 	if err != nil {
 		log.Warnf("[%s] failed to extract API key: %v", pluginName, err)
-		sendErrorResponse(http.StatusUnauthorized, "Missing API Key")
+		sendErrorResponseAndMarkDenied(ctx, http.StatusUnauthorized, "Missing API Key")
 		return types.ActionContinue
 	}
 
@@ -250,7 +258,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
 		log.Errorf("[%s] failed to marshal balance request: %v", pluginName, err)
-		sendErrorResponse(http.StatusInternalServerError, config.FailBalanceMessage)
+		sendErrorResponseAndMarkDenied(ctx, http.StatusInternalServerError, config.FailBalanceMessage)
 		return types.ActionContinue
 	}
 
@@ -270,7 +278,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		if statusCode != http.StatusOK {
 			log.Errorf("[%s] balance check failed: apikey=%s status=%d body=%s",
 				pluginName, maskApiKey(apiKey), statusCode, string(responseBody))
-			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
 
@@ -279,7 +287,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		if err := json.Unmarshal(responseBody, &balanceResp); err != nil {
 			log.Errorf("[%s] failed to parse balance response: apikey=%s error=%v body=%s",
 				pluginName, maskApiKey(apiKey), err, string(responseBody))
-			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
 
@@ -288,17 +296,19 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		if err != nil {
 			log.Errorf("[%s] failed to parse balance value: apikey=%s balance=%s error=%v",
 				pluginName, maskApiKey(apiKey), balanceResp.Balance, err)
-			sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
 
 		log.Infof("[%s] balance check: apikey=%s balance=%s", pluginName, maskApiKey(apiKey), balanceResp.Balance)
 
 		// Check if balance is sufficient
-		if balance <= 0 {
+		// Use a small epsilon to handle floating point precision issues
+		const epsilon = 0.0001
+		if balance < epsilon {
 			log.Warnf("[%s] insufficient balance: apikey=%s balance=%s",
 				pluginName, maskApiKey(apiKey), balanceResp.Balance)
-			sendErrorResponse(http.StatusPaymentRequired, config.InsufficientBalanceMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusPaymentRequired, config.InsufficientBalanceMessage)
 			return
 		}
 
@@ -310,7 +320,7 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	if err != nil {
 		log.Errorf("[%s] failed to send balance check request: apikey=%s path=%s error=%v",
 			pluginName, maskApiKey(apiKey), path, err)
-		sendErrorResponse(http.StatusServiceUnavailable, config.FailBalanceMessage)
+		sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 		return types.ActionContinue
 	}
 
@@ -321,6 +331,12 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 
 // onHttpResponseHeaders handles the response headers phase
 func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.Action {
+	// Check if request was denied in request phase
+	if denied, ok := ctx.GetContext(CtxKeyRequestDenied).(bool); ok && denied {
+		log.Debugf("[%s] request was denied, skipping response processing", pluginName)
+		return types.ActionContinue
+	}
+
 	log.Debugf("[%s] processing response headers", pluginName)
 
 	// Check HTTP status code
@@ -347,6 +363,12 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.
 
 // onHttpResponseBody handles the non-streaming response body
 func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []byte) types.Action {
+	// Check if request was denied in request phase
+	if denied, ok := ctx.GetContext(CtxKeyRequestDenied).(bool); ok && denied {
+		log.Debugf("[%s] request was denied, skipping response body processing", pluginName)
+		return types.ActionContinue
+	}
+
 	log.Debugf("[%s] processing response body", pluginName)
 
 	// Extract token usage
@@ -365,6 +387,13 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 	// Extract provider
 	provider := extractProvider(ctx)
 
+	// Extract model from request header
+	model := extractModel(ctx)
+	if model == "" {
+		log.Warnf("[%s] model not found in x-higress-llm-model header, using model from response: %s", pluginName, usage.Model)
+		model = usage.Model
+	}
+
 	// Get API key from context
 	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
 	if !ok {
@@ -375,13 +404,13 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 	}
 
 	log.Infof("[%s] extracted billing info: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
-		pluginName, maskApiKey(apiKey), requestID, usage.InputToken, usage.OutputToken, usage.Model, provider)
+		pluginName, maskApiKey(apiKey), requestID, usage.InputToken, usage.OutputToken, model, provider)
 
 	// Deduct cost
 	billingInfo := &BillingInfo{
 		InputTokens:  usage.InputToken,
 		OutputTokens: usage.OutputToken,
-		Model:        usage.Model,
+		Model:        model,
 		Provider:     provider,
 		RequestID:    requestID,
 	}
@@ -391,17 +420,30 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 
 // onHttpStreamingResponseBody handles the streaming response body
 func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, data []byte, endOfStream bool) []byte {
+	// Check if request was denied in request phase
+	if denied, ok := ctx.GetContext(CtxKeyRequestDenied).(bool); ok && denied {
+		log.Debugf("[%s] request was denied, skipping streaming response body processing", pluginName)
+		return data
+	}
+
 	// Call GetTokenUsage on each chunk
 	usage := tokenusage.GetTokenUsage(ctx, data)
 	if usage.TotalToken > 0 {
 		log.Debugf("[%s] extracted token usage from stream: inputTokens=%d outputTokens=%d",
 			pluginName, usage.InputToken, usage.OutputToken)
 
+		// Extract model from request header
+		model := extractModel(ctx)
+		if model == "" {
+			log.Warnf("[%s] model not found in x-higress-llm-model header, using model from response: %s", pluginName, usage.Model)
+			model = usage.Model
+		}
+
 		// Store billing info in context
 		billingInfo := &BillingInfo{
 			InputTokens:  usage.InputToken,
 			OutputTokens: usage.OutputToken,
-			Model:        usage.Model,
+			Model:        model,
 		}
 		ctx.SetContext(CtxKeyBillingInfo, billingInfo)
 	}
@@ -468,10 +510,22 @@ func extractRequestID(ctx wrapper.HttpContext, data []byte) string {
 	return ""
 }
 
+// extractModel extracts the model name from the x-higress-llm-model request header
+func extractModel(ctx wrapper.HttpContext) string {
+	// Try to get from x-higress-llm-model header
+	if model, err := proxywasm.GetHttpRequestHeader("x-higress-llm-model"); err == nil && model != "" {
+		return model
+	}
+
+	// Fallback to empty string if not found
+	return ""
+}
+
 // extractProvider extracts the provider information from context or route
 func extractProvider(ctx wrapper.HttpContext) string {
-	// Priority 1: Try to get from X-AI-Provider header (set by ai-proxy plugin)
-	if provider, err := proxywasm.GetHttpRequestHeader("X-AI-Provider"); err == nil && provider != "" {
+	// Priority 1: Try to get from x-ai-Provider header (set by ai-proxy plugin)
+	// This header is user origin request add
+	if provider, err := proxywasm.GetHttpRequestHeader("x-ai-provider"); err == nil && provider != "" {
 		return provider
 	}
 
