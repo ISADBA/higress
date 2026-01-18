@@ -1,0 +1,22 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-billing
+  namespace: higress-system
+spec:
+  defaultConfig:
+    billingService:
+      namespace: higress-system
+      serviceAddress: billing-service
+      protocol: http
+      port: 8888
+    failBalanceMessage: "503 Billing Service Balance Unavailable"
+    insufficientBalanceMessage: "余额不足"
+    failCostMessage: "503 Billing Service Cost Unavailable"
+  defaultConfigDisable: false
+  failStrategy: FAIL_CLOSE
+  imagePullPolicy: UNSPECIFIED_POLICY
+  phase: UNSPECIFIED_PHASE
+  priority: 200
+  imagePullSecret: isadba-registry-secret
+  url: oci://crpi-0vih3w2g8se3zbl8.cn-hangzhou.personal.cr.aliyuncs.com/ociplugins/ai-billing:1.0.0-alpha

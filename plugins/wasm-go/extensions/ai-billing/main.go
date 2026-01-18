@@ -153,16 +153,16 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	// Use K8sCluster - requires Higress global config: onlyPushRouteCluster: false
-	config.billingClient = wrapper.NewClusterClient(wrapper.K8sCluster{
-		ServiceName: config.BillingService.ServiceAddress,
-		Namespace:   config.BillingService.Namespace,
-		Port:        port,
+	// Use FQDNCluster with constructed FQDN address
+	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", config.BillingService.ServiceAddress, config.BillingService.Namespace)
+	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
+		FQDN: fqdn,
+		Port: int64(port),
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s.%s:%d cluster=%s",
-		pluginName, protocol, config.BillingService.ServiceAddress, config.BillingService.Namespace, port, clusterName)
+	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s:%d fqdn=%s cluster=%s",
+		pluginName, protocol, fqdn, port, fqdn, clusterName)
 
 	return nil
 }
