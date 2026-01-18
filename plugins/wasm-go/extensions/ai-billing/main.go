@@ -153,16 +153,16 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 
 	// Initialize HTTP client for billing service
-	// Use FQDNCluster with constructed FQDN address
-	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", config.BillingService.ServiceAddress, config.BillingService.Namespace)
+	// Use FQDNCluster with service name directly (not full FQDN)
+	// Envoy/Istio will handle the service discovery
 	config.billingClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
-		FQDN: fqdn,
+		FQDN: config.BillingService.ServiceAddress,
 		Port: int64(port),
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s:%d fqdn=%s cluster=%s",
-		pluginName, protocol, fqdn, port, fqdn, clusterName)
+	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s:%d cluster=%s",
+		pluginName, protocol, config.BillingService.ServiceAddress, port, clusterName)
 
 	return nil
 }
