@@ -1,0 +1,54 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-header-modifier
+  namespace: higress-system
+spec:
+  defaultConfig:
+    # ========================================
+    # AI + MSE Combined Configuration
+    # ========================================
+    # This configuration combines AI model extraction with MSE metadata injection
+
+    # ========== AI Configuration ==========
+    # Extract model and provider from LLM request bodies
+    modelKey: "model"
+    modelToHeader: "x-higress-llm-model"
+    addProviderHeader: "x-higress-llm-provider"
+    enableOnPathSuffix:
+      - "/v1/chat/completions"
+      - "/v1/embeddings"
+      - "/v1/images/generations"
+
+    # ========== MSE Configuration ==========
+    # Add MSE metadata headers to all requests
+
+    # Static headers
+    staticHeaders:
+      - key: "x-mse-gateway-instance-id"
+        value: "gateway-001"
+      - key: "x-environment"
+        value: "production"
+
+    # Fixed source headers
+    fixedSourceHeaders:
+      - source: "authority"
+        target: "x-mse-domain-name"
+      - source: "route_name"
+        target: "x-mse-router-name"
+      - source: "cluster_name"
+        target: "x-mse-service-name"
+
+    # Priority source headers
+    prioritySourceHeaders:
+      - target: "x-mse-consumer-apikey"
+        sources: ["authorization", "x-api-key"]
+        stripPrefix: "Bearer "
+
+  # ========================================
+  # Behavior Notes
+  # ========================================
+  # 1. MSE headers are added to ALL requests (not affected by enableOnPathSuffix)
+  # 2. AI model extraction only happens for paths matching enableOnPathSuffix
+  # 3. For LLM requests: both AI headers and MSE headers are added
+  # 4. For non-LLM requests: only MSE headers are added

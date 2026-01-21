@@ -6,8 +6,8 @@ metadata:
 spec:
   defaultConfig:
     billingService:
-      namespace: higress-system
-      serviceAddress: billing-service
+      # 使用 McpBridge 中注册的服务名称
+      serviceAddress: billing-service.internal.dns
       protocol: http
       port: 8888
     failBalanceMessage: "503 Billing Service Balance Unavailable"
