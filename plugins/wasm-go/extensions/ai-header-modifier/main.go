@@ -285,6 +285,11 @@ func processFixedSourceHeaders(config AiHeaderModifierConfig, log log.Log) {
 				log.Debugf("Failed to get :authority header: %v", err)
 				continue
 			}
+			// Strip port from authority (e.g., "example.com:8080" -> "example.com")
+			if idx := strings.Index(value, ":"); idx != -1 {
+				value = value[:idx]
+				log.Debugf("Stripped port from authority, new value: %s", value)
+			}
 		case "route_name":
 			valueBytes, propErr := proxywasm.GetProperty([]string{"route_name"})
 			if propErr != nil {

@@ -191,10 +191,15 @@ fixedSourceHeaders:
 ```
 
 **支持的来源：**
-- `authority` - `:authority` pseudo-header（域名）
+- `authority` - `:authority` pseudo-header（域名，自动去除端口部分）
 - `route_name` - Envoy 路由名称
 - `cluster_name` - Envoy 集群/服务名称
 - `consumer_name` - 认证的消费者名称
+
+**注意：** 当使用 `authority` 作为来源时，插件会自动去除端口部分。例如：
+- `isadba.com:8080` → `isadba.com`
+- `192.168.1.1:8080` → `192.168.1.1`
+- `example.com` → `example.com`（无端口时保持不变）
 
 #### 3. 优先级源列表 (Priority Source Headers)
 

@@ -56,9 +56,9 @@ func TestParseConfig(t *testing.T) {
 		{
 			name: "custom config",
 			config: map[string]interface{}{
-				"modelKey":          "llm_model",
-				"modelToHeader":     "x-llm-model",
-				"addProviderHeader": "x-llm-provider",
+				"modelKey":           "llm_model",
+				"modelToHeader":      "x-llm-model",
+				"addProviderHeader":  "x-llm-provider",
 				"enableOnPathSuffix": []string{"/v1/chat/completions", "/v1/embeddings"},
 			},
 			expectError: false,
@@ -152,9 +152,9 @@ func TestExtractBoundary(t *testing.T) {
 
 func TestJSONBodyProcessing(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -193,8 +193,8 @@ func TestJSONBodyProcessing(t *testing.T) {
 
 func TestJSONBodyWithoutProvider(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -229,8 +229,8 @@ func TestJSONBodyWithoutProvider(t *testing.T) {
 
 func TestPathFiltering(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -252,8 +252,8 @@ func TestPathFiltering(t *testing.T) {
 
 func TestWildcardPath(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"*"},
 	})
 
@@ -283,8 +283,8 @@ func TestWildcardPath(t *testing.T) {
 
 func TestNoRequestBody(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -305,8 +305,8 @@ func TestNoRequestBody(t *testing.T) {
 
 func TestInvalidJSON(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -348,8 +348,8 @@ func buildMultipartBody(boundary string, parts map[string]string) string {
 
 func TestMultipartBodyWithoutProvider(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -387,9 +387,9 @@ func TestMultipartBodyWithoutProvider(t *testing.T) {
 
 func TestMultipartBodyWithProvider(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -431,9 +431,9 @@ func TestMultipartBodyWithProvider(t *testing.T) {
 
 func TestMultipartBodyWithComplexProvider(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -475,9 +475,9 @@ func TestMultipartBodyWithComplexProvider(t *testing.T) {
 
 func TestMultipartBodyMissingModel(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -513,8 +513,8 @@ func TestMultipartBodyMissingModel(t *testing.T) {
 
 func TestMultipartBodyOnlyProviderHeader(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -556,9 +556,9 @@ func TestMultipartBodyOnlyProviderHeader(t *testing.T) {
 
 func TestMultipartBodyMalformedBoundary(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -589,9 +589,9 @@ func TestMultipartBodyMalformedBoundary(t *testing.T) {
 
 func TestMultipartBodyMultipleParts(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -637,9 +637,9 @@ func TestMultipartBodyMultipleParts(t *testing.T) {
 
 func TestMultipartBodyCustomModelKey(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "llm_model",
-		"modelToHeader":     "x-model",
-		"addProviderHeader": "x-provider",
+		"modelKey":           "llm_model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -673,8 +673,8 @@ func TestMultipartBodyCustomModelKey(t *testing.T) {
 
 func TestMultipartBodyNoBoundary(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -697,8 +697,8 @@ func TestMultipartBodyNoBoundary(t *testing.T) {
 
 func TestMultipartBodyEmptyModel(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -732,8 +732,8 @@ func TestMultipartBodyEmptyModel(t *testing.T) {
 
 func TestJSONBodyModelNotString(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -763,8 +763,8 @@ func TestJSONBodyModelNotString(t *testing.T) {
 
 func TestJSONBodyNestedModel(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
-		"modelKey":          "model",
-		"modelToHeader":     "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 	})
 
@@ -940,8 +940,8 @@ func TestPrioritySourceHeadersWithMultiple(t *testing.T) {
 func TestMixedConfiguration(t *testing.T) {
 	configData, _ := json.Marshal(map[string]interface{}{
 		// AI configuration
-		"modelKey":      "model",
-		"modelToHeader": "x-model",
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
 		"enableOnPathSuffix": []string{"/v1/chat/completions"},
 
 		// Static headers
@@ -1023,5 +1023,83 @@ func TestOnlyCustomHeaders(t *testing.T) {
 		headers := host.GetRequestHeaders()
 		custom, _ := test.GetHeaderValue(headers, "x-custom")
 		require.Equal(t, "test", custom)
+	})
+}
+
+func TestFixedSourceHeadersAuthorityWithPort(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"fixedSourceHeaders": []map[string]interface{}{
+			{"source": "authority", "target": "x-mse-domain-name"},
+		},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test with authority containing port
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "isadba.com:8080"},
+			{":path", "/test"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify port was stripped
+		headers := host.GetRequestHeaders()
+		domain, _ := test.GetHeaderValue(headers, "x-mse-domain-name")
+		require.Equal(t, "isadba.com", domain)
+	})
+}
+
+func TestFixedSourceHeadersAuthorityWithoutPort(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"fixedSourceHeaders": []map[string]interface{}{
+			{"source": "authority", "target": "x-mse-domain-name"},
+		},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test with authority without port
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "example.com"},
+			{":path", "/test"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify domain remains unchanged
+		headers := host.GetRequestHeaders()
+		domain, _ := test.GetHeaderValue(headers, "x-mse-domain-name")
+		require.Equal(t, "example.com", domain)
+	})
+}
+
+func TestFixedSourceHeadersAuthorityWithIPv4AndPort(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"fixedSourceHeaders": []map[string]interface{}{
+			{"source": "authority", "target": "x-mse-domain-name"},
+		},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test with IPv4 address and port
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "192.168.1.1:8080"},
+			{":path", "/test"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify port was stripped
+		headers := host.GetRequestHeaders()
+		domain, _ := test.GetHeaderValue(headers, "x-mse-domain-name")
+		require.Equal(t, "192.168.1.1", domain)
 	})
 }

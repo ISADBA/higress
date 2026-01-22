@@ -155,3 +155,127 @@ enableOnPathSuffix:
 - Supports JSON format request bodies (Content-Type: application/json)
 - Supports multipart/form-data format request bodies
 - Compatible with all mainstream LLM API formats (OpenAI, Anthropic, Google, etc.)
+
+## Custom Header Management
+
+In addition to AI model extraction, the plugin supports flexible custom header management, suitable for scenarios like MSE (Microservices Engine) metadata injection.
+
+### Feature Types
+
+#### 1. Static Headers
+
+Add headers with fixed configured values, suitable for gateway instance identification, environment labels, etc.
+
+```yaml
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+  - key: "x-environment"
+    value: "production"
+```
+
+#### 2. Fixed Source Headers
+
+Read values from fixed sources (Envoy properties or pseudo-headers) and write to target headers.
+
+```yaml
+fixedSourceHeaders:
+  - source: "authority"          # Source: :authority pseudo-header
+    target: "x-mse-domain-name"  # Target header
+  - source: "route_name"         # Source: Envoy route name
+    target: "x-mse-router-name"
+  - source: "cluster_name"       # Source: Envoy cluster name
+    target: "x-mse-service-name"
+  - source: "consumer_name"      # Source: authenticated consumer name
+    target: "x-mse-consumer-name"
+```
+
+**Supported Sources:**
+- `authority` - `:authority` pseudo-header (domain name, port is automatically stripped)
+- `route_name` - Envoy route name
+- `cluster_name` - Envoy cluster/service name
+- `consumer_name` - Authenticated consumer name
+
+**Note:** When using `authority` as the source, the plugin automatically strips the port. For example:
+- `isadba.com:8080` → `isadba.com`
+- `192.168.1.1:8080` → `192.168.1.1`
+- `example.com` → `example.com` (unchanged when no port)
+
+#### 3. Priority Source Headers
+
+Extract values from multiple candidate headers (in priority order), suitable for API key extraction scenarios.
+
+```yaml
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources:
+      - "authorization"      # Priority 1
+      - "x-api-key"         # Priority 2
+      - "api-key"           # Priority 3
+    stripPrefix: "Bearer "  # Optional: strip prefix
+```
+
+**Features:**
+- Try each source header in priority order
+- Use the first non-empty value found
+- Support prefix stripping (e.g., strip "Bearer " from Authorization header)
+
+### Use Cases
+
+#### Use Case 3: MSE Metadata Injection
+
+Add MSE-related metadata headers to all requests for observability, billing, routing, etc.
+
+```yaml
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+
+fixedSourceHeaders:
+  - source: "authority"
+    target: "x-mse-domain-name"
+  - source: "route_name"
+    target: "x-mse-router-name"
+  - source: "cluster_name"
+    target: "x-mse-service-name"
+
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization", "x-api-key"]
+    stripPrefix: "Bearer "
+```
+
+#### Use Case 4: AI + MSE Combined
+
+Use both AI model extraction and MSE metadata injection features.
+
+```yaml
+# AI configuration
+modelKey: "model"
+modelToHeader: "x-higress-llm-model"
+addProviderHeader: "x-higress-llm-provider"
+enableOnPathSuffix:
+  - "/v1/chat/completions"
+
+# MSE configuration
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+
+fixedSourceHeaders:
+  - source: "authority"
+    target: "x-mse-domain-name"
+  - source: "route_name"
+    target: "x-mse-router-name"
+
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization", "x-api-key"]
+    stripPrefix: "Bearer "
+```
+
+**Behavior Notes:**
+- MSE headers are added to ALL requests (not affected by `enableOnPathSuffix`)
+- AI model extraction only happens for paths matching `enableOnPathSuffix`
+- For LLM requests: both AI headers and MSE headers are added
+- For non-LLM requests: only MSE headers are added
