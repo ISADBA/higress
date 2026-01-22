@@ -383,10 +383,10 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AiHeaderModifierConfig
 	processFixedSourceHeaders(config, log)
 	processPrioritySourceHeaders(config, log)
 
-	// Check if request has body
-	contentLength, err := proxywasm.GetHttpRequestHeader("content-length")
-	if err != nil || contentLength == "" || contentLength == "0" {
-		log.Debug("No request body, skipping processing")
+	// Check if request has body using the reliable method
+	// This method checks endOfStream flag and is not affected by content-length header removal
+	if !ctx.HasRequestBody() {
+		log.Debug("No request body, skipping AI processing")
 		return types.ActionContinue
 	}
 
