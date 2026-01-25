@@ -12,7 +12,6 @@ spec:
       port: 8888
     failBalanceMessage: "503 Billing Service Balance Unavailable"
     insufficientBalanceMessage: "余额不足"
-    failCostMessage: "503 Billing Service Cost Unavailable"
   defaultConfigDisable: false
   failStrategy: FAIL_CLOSE
   imagePullPolicy: UNSPECIFIED_POLICY
