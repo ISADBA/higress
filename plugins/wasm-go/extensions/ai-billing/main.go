@@ -22,7 +22,8 @@ const (
 
 // Context keys for storing data across request lifecycle
 const (
-	CtxKeyApiKey        = "ai-billing-api-key"
+	CtxKeyTenantInfo    = "ai-billing-tenant-info"
+	CtxKeyApiKey        = "ai-billing-api-key" // Optional, for debug logging only
 	CtxKeyBillingInfo   = "ai-billing-info"
 	CtxKeyIsStreaming   = "ai-billing-is-streaming"
 	CtxKeyRequestDenied = "ai-billing-request-denied"
@@ -44,18 +45,35 @@ func init() {
 // BillingConfig holds the plugin configuration
 type BillingConfig struct {
 	BillingService             BillingServiceConfig `yaml:"billingService"`
+	FailPricingMessage         string               `yaml:"failPricingMessage"`
 	FailBalanceMessage         string               `yaml:"failBalanceMessage"`
 	InsufficientBalanceMessage string               `yaml:"insufficientBalanceMessage"`
 	FailCostMessage            string               `yaml:"failCostMessage"`
 	billingClient              wrapper.HttpClient
+	pricingCache               map[string]bool // key: provider:model
 }
 
 // BillingServiceConfig holds the billing service connection details
 type BillingServiceConfig struct {
 	ServiceAddress string `yaml:"serviceAddress"`
-	Namespace      string `yaml:"namespace"`
 	Protocol       string `yaml:"protocol"`
 	Port           int    `yaml:"port"`
+}
+
+// TenantInfo holds tenant information and HMAC authentication headers
+type TenantInfo struct {
+	// HMAC Authentication Headers
+	SignVersion string // x-internal-auth-sign-version
+	Timestamp   string // x-internal-auth-ts
+	Nonce       string // x-internal-auth-nonce
+	Signature   string // x-internal-auth-sign
+
+	// Tenant/Consumer Information
+	ConsumerID       string // x-consumer-id
+	ConsumerName     string // x-mse-consumer-name
+	TenantID         string // x-mse-tenant-id
+	DomainResourceID string // x-domain-resource-id
+	RouterResourceID string // x-router-resource-id
 }
 
 // BalanceRequest represents the request to check user balance
@@ -65,6 +83,8 @@ type BalanceRequest struct {
 
 // BalanceResponse represents the response from balance check
 type BalanceResponse struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
 	Balance   string `json:"balance"`
 	UID       int64  `json:"uid"`
 	UpdatedAt int64  `json:"updated_at"`
@@ -72,22 +92,34 @@ type BalanceResponse struct {
 
 // CostRequest represents the request to deduct cost
 type CostRequest struct {
-	ApiKey       string `json:"apikey"`
+	Provider     string `json:"provider"`
+	ModelName    string `json:"model_name"`
+	RequestID    string `json:"request_id"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
-	ModelName    string `json:"model_name"`
-	Provider     string `json:"provider"`
-	RequestID    string `json:"request_id"`
+	// Note: consumer_id, consumer_name, tenant_id are in headers, not body
 }
 
 // CostResponse represents the response from cost deduction
 type CostResponse struct {
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
 	BillingEventID   int64  `json:"billing_event_id"`
 	Cost             string `json:"cost"`
 	CostActual       string `json:"cost_actual"`
 	DiscountRatio    string `json:"discount_ratio"`
 	RemainingBalance string `json:"remaining_balance"`
-	Success          bool   `json:"success"`
+}
+
+// PricingResponse represents the response from pricing query
+type PricingResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Provider  string `json:"provider"`
+		ModelName string `json:"model_name"`
+		// Additional pricing fields can be added here if needed
+	} `json:"data"`
 }
 
 // BillingInfo holds the billing information extracted from LLM response
@@ -115,13 +147,6 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	}
 	config.BillingService.ServiceAddress = serviceAddress
 
-	// Parse namespace with default
-	namespace := billingService.Get("namespace").String()
-	if namespace == "" {
-		namespace = "higress-system"
-	}
-	config.BillingService.Namespace = namespace
-
 	// Parse protocol with default
 	protocol := billingService.Get("protocol").String()
 	if protocol == "" {
@@ -137,6 +162,11 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	config.BillingService.Port = int(port)
 
 	// Parse error messages with defaults
+	config.FailPricingMessage = json.Get("failPricingMessage").String()
+	if config.FailPricingMessage == "" {
+		config.FailPricingMessage = "503 Pricing Information Unavailable"
+	}
+
 	config.FailBalanceMessage = json.Get("failBalanceMessage").String()
 	if config.FailBalanceMessage == "" {
 		config.FailBalanceMessage = "503 Billing Service Balance Unavailable"
@@ -152,6 +182,9 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 		config.FailCostMessage = "503 Billing Service Cost Unavailable"
 	}
 
+	// Initialize pricing cache
+	config.pricingCache = make(map[string]bool)
+
 	// Initialize HTTP client for billing service
 	// Use FQDNCluster with service name directly (not full FQDN)
 	// Envoy/Istio will handle the service discovery
@@ -161,7 +194,7 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	})
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] configuration parsed successfully: version=1.0.12-alpha service=%s://%s:%d cluster=%s",
+	log.Infof("[%s] configuration parsed successfully: version=2.0.0-tenant service=%s://%s:%d cluster=%s",
 		pluginName, protocol, config.BillingService.ServiceAddress, port, clusterName)
 
 	return nil
@@ -210,6 +243,75 @@ func maskApiKey(apiKey string) string {
 	return apiKey[:8] + "***"
 }
 
+// extractTenantInfo extracts tenant information and HMAC authentication headers from the request
+func extractTenantInfo(ctx wrapper.HttpContext) (*TenantInfo, error) {
+	tenantInfo := &TenantInfo{}
+	var missingFields []string
+
+	// Extract HMAC Authentication Headers
+	if signVersion, err := proxywasm.GetHttpRequestHeader("x-internal-auth-sign-version"); err != nil || signVersion == "" {
+		missingFields = append(missingFields, "x-internal-auth-sign-version")
+	} else {
+		tenantInfo.SignVersion = signVersion
+	}
+
+	if timestamp, err := proxywasm.GetHttpRequestHeader("x-internal-auth-ts"); err != nil || timestamp == "" {
+		missingFields = append(missingFields, "x-internal-auth-ts")
+	} else {
+		tenantInfo.Timestamp = timestamp
+	}
+
+	if nonce, err := proxywasm.GetHttpRequestHeader("x-internal-auth-nonce"); err != nil || nonce == "" {
+		missingFields = append(missingFields, "x-internal-auth-nonce")
+	} else {
+		tenantInfo.Nonce = nonce
+	}
+
+	if signature, err := proxywasm.GetHttpRequestHeader("x-internal-auth-sign"); err != nil || signature == "" {
+		missingFields = append(missingFields, "x-internal-auth-sign")
+	} else {
+		tenantInfo.Signature = signature
+	}
+
+	// Extract Tenant/Consumer Information
+	if consumerID, err := proxywasm.GetHttpRequestHeader("x-consumer-id"); err != nil || consumerID == "" {
+		missingFields = append(missingFields, "x-consumer-id")
+	} else {
+		tenantInfo.ConsumerID = consumerID
+	}
+
+	if consumerName, err := proxywasm.GetHttpRequestHeader("x-mse-consumer-name"); err != nil || consumerName == "" {
+		missingFields = append(missingFields, "x-mse-consumer-name")
+	} else {
+		tenantInfo.ConsumerName = consumerName
+	}
+
+	if tenantID, err := proxywasm.GetHttpRequestHeader("x-mse-tenant-id"); err != nil || tenantID == "" {
+		missingFields = append(missingFields, "x-mse-tenant-id")
+	} else {
+		tenantInfo.TenantID = tenantID
+	}
+
+	if domainResourceID, err := proxywasm.GetHttpRequestHeader("x-domain-resource-id"); err != nil || domainResourceID == "" {
+		missingFields = append(missingFields, "x-domain-resource-id")
+	} else {
+		tenantInfo.DomainResourceID = domainResourceID
+	}
+
+	if routerResourceID, err := proxywasm.GetHttpRequestHeader("x-router-resource-id"); err != nil || routerResourceID == "" {
+		missingFields = append(missingFields, "x-router-resource-id")
+	} else {
+		tenantInfo.RouterResourceID = routerResourceID
+	}
+
+	// Check if any required fields are missing
+	if len(missingFields) > 0 {
+		return nil, fmt.Errorf("missing required tenant headers: %s", strings.Join(missingFields, ", "))
+	}
+
+	return tenantInfo, nil
+}
+
 // sendErrorResponse sends an error response to the client
 // Can be used in both request and response phases
 // When response is paused, this will send the error and the response won't be resumed
@@ -231,53 +333,185 @@ func sendErrorResponseAndMarkDenied(ctx wrapper.HttpContext, statusCode int, mes
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.Action {
 	log.Debugf("[%s] processing request headers", pluginName)
 
-	// Extract API key
-	apiKey, err := extractApiKey(ctx)
+	// Extract tenant information (required)
+	tenantInfo, err := extractTenantInfo(ctx)
 	if err != nil {
-		log.Warnf("[%s] failed to extract API key: %v", pluginName, err)
-		sendErrorResponseAndMarkDenied(ctx, http.StatusUnauthorized, "Missing API Key")
+		log.Errorf("[%s] failed to extract tenant info: %v", pluginName, err)
+		sendErrorResponseAndMarkDenied(ctx, http.StatusUnauthorized, "Missing or invalid tenant authentication headers")
 		return types.ActionContinue
 	}
 
-	// Store API key in context
-	ctx.SetContext(CtxKeyApiKey, apiKey)
-	log.Debugf("[%s] API key extracted: %s", pluginName, maskApiKey(apiKey))
+	// Store tenant info in context
+	ctx.SetContext(CtxKeyTenantInfo, tenantInfo)
+	log.Infof("[%s] tenant info extracted: tenantId=%s consumerId=%s consumerName=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
-	// Check balance
-	return checkBalance(ctx, config, apiKey)
+	// Optional: Extract API key for debug logging
+	apiKey, err := extractApiKey(ctx)
+	if err == nil && apiKey != "" {
+		ctx.SetContext(CtxKeyApiKey, apiKey)
+		log.Debugf("[%s] API key extracted: %s", pluginName, maskApiKey(apiKey))
+	} else {
+		log.Debugf("[%s] API key not found (optional for debug logging)", pluginName)
+	}
+
+	// Extract provider and model for pricing check
+	provider := extractProvider(ctx)
+	model := extractModel(ctx)
+
+	if provider == "" || model == "" {
+		log.Warnf("[%s] provider or model not found, skipping pricing check: provider=%s model=%s",
+			pluginName, provider, model)
+		// If we can't determine provider/model, skip pricing check and go directly to balance check
+		return checkBalance(ctx, config, tenantInfo)
+	}
+
+	// Check pricing (with cache)
+	action := checkPricing(ctx, &config, tenantInfo, provider, model)
+	if action == types.ActionPause {
+		// Pricing query is async, will call checkBalance in callback
+		return action
+	}
+
+	// Pricing was cached or error occurred, continue with balance check
+	return checkBalance(ctx, config, tenantInfo)
+}
+
+// checkPricingCache checks if pricing information is cached for the given provider and model
+func checkPricingCache(config *BillingConfig, provider, model string) bool {
+	cacheKey := fmt.Sprintf("%s:%s", provider, model)
+	return config.pricingCache[cacheKey]
+}
+
+// storePricingCache stores pricing information in the cache
+func storePricingCache(config *BillingConfig, provider, model string) {
+	cacheKey := fmt.Sprintf("%s:%s", provider, model)
+	config.pricingCache[cacheKey] = true
+	log.Debugf("[%s] pricing cached: key=%s", pluginName, cacheKey)
+}
+
+// checkPricing checks if pricing information exists for the given provider and model
+// Returns types.ActionPause if query is in progress, types.ActionContinue if cached or error
+func checkPricing(ctx wrapper.HttpContext, config *BillingConfig, tenantInfo *TenantInfo, provider, model string) types.Action {
+	// Check cache first
+	if checkPricingCache(config, provider, model) {
+		log.Infof("[%s] pricing cache hit: tenantId=%s provider=%s model=%s",
+			pluginName, tenantInfo.TenantID, provider, model)
+		return types.ActionContinue
+	}
+
+	log.Infof("[%s] pricing cache miss, querying: tenantId=%s consumerId=%s provider=%s model=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model)
+
+	// Build request headers with tenant info and HMAC authentication
+	headers := [][2]string{
+		{"x-internal-auth-sign-version", tenantInfo.SignVersion},
+		{"x-internal-auth-ts", tenantInfo.Timestamp},
+		{"x-internal-auth-nonce", tenantInfo.Nonce},
+		{"x-internal-auth-sign", tenantInfo.Signature},
+		{"x-consumer-id", tenantInfo.ConsumerID},
+		{"x-mse-consumer-name", tenantInfo.ConsumerName},
+		{"x-mse-tenant-id", tenantInfo.TenantID},
+		{"x-domain-resource-id", tenantInfo.DomainResourceID},
+		{"x-router-resource-id", tenantInfo.RouterResourceID},
+	}
+
+	// Build URL with query parameters
+	path := fmt.Sprintf("/v1/pricing/global?provider=%s&model_name=%s", provider, model)
+
+	log.Debugf("[%s] sending pricing query request: path=%s", pluginName, path)
+
+	err := config.billingClient.Get(path, headers, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+		log.Infof("[%s] pricing query response: status=%d body=%s", pluginName, statusCode, string(responseBody))
+
+		// Handle response in callback
+		if statusCode != http.StatusOK {
+			log.Errorf("[%s] pricing query failed: tenantId=%s consumerId=%s provider=%s model=%s status=%d body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model, statusCode, string(responseBody))
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailPricingMessage)
+			return
+		}
+
+		// Parse response
+		var pricingResp PricingResponse
+		if err := json.Unmarshal(responseBody, &pricingResp); err != nil {
+			log.Errorf("[%s] failed to parse pricing response: tenantId=%s consumerId=%s provider=%s model=%s error=%v body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model, err, string(responseBody))
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailPricingMessage)
+			return
+		}
+
+		// Check success field
+		if !pricingResp.Success {
+			// Use message from billing service if available, otherwise use config default
+			errorMessage := config.FailPricingMessage
+			if pricingResp.Message != "" {
+				errorMessage = pricingResp.Message
+			}
+			log.Errorf("[%s] pricing query failed: tenantId=%s consumerId=%s provider=%s model=%s message=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model, errorMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, errorMessage)
+			return
+		}
+
+		// Store pricing in cache
+		storePricingCache(config, provider, model)
+		log.Infof("[%s] pricing query successful: tenantId=%s consumerId=%s provider=%s model=%s",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model)
+
+		// Continue with balance check
+		action := checkBalance(ctx, *config, tenantInfo)
+		if action == types.ActionPause {
+			// Balance check is async, don't resume yet
+			return
+		}
+		// Balance check completed synchronously (error case), resume request
+		proxywasm.ResumeHttpRequest()
+	}, 5000) // 5 second timeout
+
+	if err != nil {
+		log.Errorf("[%s] failed to send pricing query request: tenantId=%s consumerId=%s provider=%s model=%s path=%s error=%v",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, provider, model, path, err)
+		sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailPricingMessage)
+		return types.ActionContinue
+	}
+
+	log.Debugf("[%s] pricing query request sent, pausing request", pluginName)
+	// Pause processing until callback completes
+	return types.ActionPause
 }
 
 // checkBalance checks the user's balance with the billing service
-func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) types.Action {
-	log.Debugf("[%s] checking balance for apikey=%s", pluginName, maskApiKey(apiKey))
+func checkBalance(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *TenantInfo) types.Action {
+	log.Infof("[%s] checking balance: tenantId=%s consumerId=%s consumerName=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
-	// Build request body
-	requestBody := BalanceRequest{
-		ApiKey: apiKey,
-	}
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		log.Errorf("[%s] failed to marshal balance request: %v", pluginName, err)
-		sendErrorResponseAndMarkDenied(ctx, http.StatusInternalServerError, config.FailBalanceMessage)
-		return types.ActionContinue
+	// Build request headers with tenant info and HMAC authentication
+	headers := [][2]string{
+		{"x-internal-auth-sign-version", tenantInfo.SignVersion},
+		{"x-internal-auth-ts", tenantInfo.Timestamp},
+		{"x-internal-auth-nonce", tenantInfo.Nonce},
+		{"x-internal-auth-sign", tenantInfo.Signature},
+		{"x-consumer-id", tenantInfo.ConsumerID},
+		{"x-mse-consumer-name", tenantInfo.ConsumerName},
+		{"x-mse-tenant-id", tenantInfo.TenantID},
+		{"x-domain-resource-id", tenantInfo.DomainResourceID},
+		{"x-router-resource-id", tenantInfo.RouterResourceID},
 	}
 
-	// Make async HTTP call to billing service
-	// Note: Post() expects only the path, not the full URL
+	// Make async HTTP GET call to billing service (no request body)
 	path := "/v1/amount"
 
 	clusterName := config.billingClient.ClusterName()
-	log.Infof("[%s] sending balance check request: cluster=%s path=%s body=%s", pluginName, clusterName, path, string(bodyBytes))
+	log.Debugf("[%s] sending balance check request: cluster=%s path=%s", pluginName, clusterName, path)
 
-	err = config.billingClient.Post(path, [][2]string{
-		{"content-type", "application/json"},
-	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+	err := config.billingClient.Get(path, headers, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Infof("[%s] balance check response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
-			log.Errorf("[%s] balance check failed: apikey=%s status=%d body=%s",
-				pluginName, maskApiKey(apiKey), statusCode, string(responseBody))
+			log.Errorf("[%s] balance check failed: tenantId=%s consumerId=%s status=%d body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, statusCode, string(responseBody))
 			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
@@ -285,29 +519,43 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 		// Parse response
 		var balanceResp BalanceResponse
 		if err := json.Unmarshal(responseBody, &balanceResp); err != nil {
-			log.Errorf("[%s] failed to parse balance response: apikey=%s error=%v body=%s",
-				pluginName, maskApiKey(apiKey), err, string(responseBody))
+			log.Errorf("[%s] failed to parse balance response: tenantId=%s consumerId=%s error=%v body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, err, string(responseBody))
 			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
+			return
+		}
+
+		// Check success field
+		if !balanceResp.Success {
+			// Use message from billing service if available, otherwise use config default
+			errorMessage := config.FailBalanceMessage
+			if balanceResp.Message != "" {
+				errorMessage = balanceResp.Message
+			}
+			log.Errorf("[%s] balance check failed: tenantId=%s consumerId=%s message=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, errorMessage)
+			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, errorMessage)
 			return
 		}
 
 		// Parse balance as float
 		balance, err := strconv.ParseFloat(balanceResp.Balance, 64)
 		if err != nil {
-			log.Errorf("[%s] failed to parse balance value: apikey=%s balance=%s error=%v",
-				pluginName, maskApiKey(apiKey), balanceResp.Balance, err)
+			log.Errorf("[%s] failed to parse balance value: tenantId=%s consumerId=%s balance=%s error=%v",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, balanceResp.Balance, err)
 			sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 			return
 		}
 
-		log.Infof("[%s] balance check: apikey=%s balance=%s", pluginName, maskApiKey(apiKey), balanceResp.Balance)
+		log.Infof("[%s] balance check: tenantId=%s consumerId=%s consumerName=%s balance=%s",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, balanceResp.Balance)
 
 		// Check if balance is sufficient
 		// Use a small epsilon to handle floating point precision issues
 		const epsilon = 0.0001
 		if balance < epsilon {
-			log.Warnf("[%s] insufficient balance: apikey=%s balance=%s",
-				pluginName, maskApiKey(apiKey), balanceResp.Balance)
+			log.Warnf("[%s] insufficient balance: tenantId=%s consumerId=%s consumerName=%s balance=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, balanceResp.Balance)
 			sendErrorResponseAndMarkDenied(ctx, http.StatusPaymentRequired, config.InsufficientBalanceMessage)
 			return
 		}
@@ -318,8 +566,8 @@ func checkBalance(ctx wrapper.HttpContext, config BillingConfig, apiKey string) 
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send balance check request: apikey=%s path=%s error=%v",
-			pluginName, maskApiKey(apiKey), path, err)
+		log.Errorf("[%s] failed to send balance check request: tenantId=%s consumerId=%s path=%s error=%v",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, path, err)
 		sendErrorResponseAndMarkDenied(ctx, http.StatusServiceUnavailable, config.FailBalanceMessage)
 		return types.ActionContinue
 	}
@@ -394,17 +642,17 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 		model = usage.Model
 	}
 
-	// Get API key from context
-	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
+	// Get tenant info from context
+	tenantInfo, ok := ctx.GetContext(CtxKeyTenantInfo).(*TenantInfo)
 	if !ok {
-		log.Errorf("[%s] failed to get API key from context", pluginName)
+		log.Errorf("[%s] failed to get tenant info from context", pluginName)
 		// FAIL_CLOSE: Send error response for internal error
 		sendErrorResponse(http.StatusInternalServerError, "Internal error")
 		return types.ActionContinue
 	}
 
-	log.Infof("[%s] extracted billing info: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
-		pluginName, maskApiKey(apiKey), requestID, usage.InputToken, usage.OutputToken, model, provider)
+	log.Infof("[%s] extracted billing info: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, requestID, usage.InputToken, usage.OutputToken, model, provider)
 
 	// Deduct cost
 	billingInfo := &BillingInfo{
@@ -415,7 +663,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 		RequestID:    requestID,
 	}
 
-	return deductCost(ctx, config, billingInfo, apiKey)
+	return deductCost(ctx, config, tenantInfo, billingInfo)
 }
 
 // onHttpStreamingResponseBody handles the streaming response body
@@ -467,22 +715,22 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	billingInfo.RequestID = extractRequestID(ctx, data)
 	billingInfo.Provider = extractProvider(ctx)
 
-	// Get API key from context
-	apiKey, ok := ctx.GetContext(CtxKeyApiKey).(string)
+	// Get tenant info from context
+	tenantInfo, ok := ctx.GetContext(CtxKeyTenantInfo).(*TenantInfo)
 	if !ok {
-		log.Errorf("[%s] failed to get API key from context", pluginName)
+		log.Errorf("[%s] failed to get tenant info from context", pluginName)
 		// FAIL_CLOSE: Block response on internal error
 		sendErrorResponse(http.StatusInternalServerError, "Internal error")
 		return nil
 	}
 
-	log.Infof("[%s] extracted billing info from stream: apikey=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
-		pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.Model, billingInfo.Provider)
+	log.Infof("[%s] extracted billing info from stream: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.Model, billingInfo.Provider)
 
 	// Deduct cost asynchronously - in streaming mode, we don't pause the response
 	// because the stream has already been sent to the client
 	// We just fire the billing request and let the stream continue
-	deductCostAsync(ctx, config, billingInfo, apiKey)
+	deductCostAsync(ctx, config, tenantInfo, billingInfo)
 
 	// Return data to continue the stream
 	return data
@@ -534,17 +782,17 @@ func extractProvider(ctx wrapper.HttpContext) string {
 
 // deductCost deducts the cost from the user's balance
 // Used in non-streaming mode where we can pause and block the response
-func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *BillingInfo, apiKey string) types.Action {
-	log.Debugf("[%s] deducting cost for apikey=%s", pluginName, maskApiKey(apiKey))
+func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *TenantInfo, billingInfo *BillingInfo) types.Action {
+	log.Infof("[%s] deducting cost: tenantId=%s consumerId=%s consumerName=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
-	// Build request body
+	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
-		ApiKey:       apiKey,
+		Provider:     billingInfo.Provider,
+		ModelName:    billingInfo.Model,
+		RequestID:    billingInfo.RequestID,
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
-		ModelName:    billingInfo.Model,
-		Provider:     billingInfo.Provider,
-		RequestID:    billingInfo.RequestID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
@@ -553,21 +801,32 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 		return types.ActionContinue
 	}
 
+	// Build request headers with tenant info and HMAC authentication
+	headers := [][2]string{
+		{"content-type", "application/json"},
+		{"x-internal-auth-sign-version", tenantInfo.SignVersion},
+		{"x-internal-auth-ts", tenantInfo.Timestamp},
+		{"x-internal-auth-nonce", tenantInfo.Nonce},
+		{"x-internal-auth-sign", tenantInfo.Signature},
+		{"x-consumer-id", tenantInfo.ConsumerID},
+		{"x-mse-consumer-name", tenantInfo.ConsumerName},
+		{"x-mse-tenant-id", tenantInfo.TenantID},
+		{"x-domain-resource-id", tenantInfo.DomainResourceID},
+		{"x-router-resource-id", tenantInfo.RouterResourceID},
+	}
+
 	// Make async HTTP call to billing service
-	// Note: Post() expects only the path, not the full URL
 	path := "/v1/cost"
 
 	log.Debugf("[%s] sending cost deduction request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
-	err = config.billingClient.Post(path, [][2]string{
-		{"content-type", "application/json"},
-	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+	err = config.billingClient.Post(path, headers, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Infof("[%s] cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
-			log.Errorf("[%s] cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
+			log.Errorf("[%s] cost deduction failed: tenantId=%s consumerId=%s requestId=%s status=%d body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, billingInfo.RequestID, statusCode, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 			return
 		}
@@ -575,22 +834,27 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 		// Parse response
 		var costResp CostResponse
 		if err := json.Unmarshal(responseBody, &costResp); err != nil {
-			log.Errorf("[%s] failed to parse cost response: apikey=%s requestId=%s error=%v body=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err, string(responseBody))
+			log.Errorf("[%s] failed to parse cost response: tenantId=%s consumerId=%s requestId=%s error=%v body=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, billingInfo.RequestID, err, string(responseBody))
 			sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 			return
 		}
 
-		log.Infof("[%s] cost deduction: apikey=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
-
 		// Check if cost deduction was successful
 		if !costResp.Success {
-			log.Warnf("[%s] cost deduction failed: apikey=%s requestId=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID)
-			sendErrorResponse(http.StatusPaymentRequired, config.InsufficientBalanceMessage)
+			// Use message from billing service if available, otherwise use config default
+			errorMessage := config.InsufficientBalanceMessage
+			if costResp.Message != "" {
+				errorMessage = costResp.Message
+			}
+			log.Warnf("[%s] cost deduction failed: tenantId=%s consumerId=%s requestId=%s message=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, billingInfo.RequestID, errorMessage)
+			sendErrorResponse(http.StatusPaymentRequired, errorMessage)
 			return
 		}
+
+		log.Infof("[%s] cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
 
 		// Cost deduction successful, resume response
 		log.Debugf("[%s] cost deduction successful, resuming response", pluginName)
@@ -598,8 +862,8 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send cost deduction request: apikey=%s requestId=%s path=%s error=%v",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, path, err)
+		log.Errorf("[%s] failed to send cost deduction request: tenantId=%s consumerId=%s requestId=%s path=%s error=%v",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, billingInfo.RequestID, path, err)
 		sendErrorResponse(http.StatusServiceUnavailable, config.FailCostMessage)
 		return types.ActionContinue
 	}
@@ -612,22 +876,37 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, billingInfo *Bill
 // deductCostAsync deducts the cost from the user's balance asynchronously
 // Used in streaming mode where we cannot pause the response
 // Errors are logged but do not block the response
-func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, billingInfo *BillingInfo, apiKey string) {
-	log.Debugf("[%s] deducting cost asynchronously for apikey=%s", pluginName, maskApiKey(apiKey))
+func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *TenantInfo, billingInfo *BillingInfo) {
+	log.Infof("[%s] deducting cost asynchronously: tenantId=%s consumerId=%s consumerName=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
-	// Build request body
+	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
-		ApiKey:       apiKey,
+		Provider:     billingInfo.Provider,
+		ModelName:    billingInfo.Model,
+		RequestID:    billingInfo.RequestID,
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
-		ModelName:    billingInfo.Model,
-		Provider:     billingInfo.Provider,
-		RequestID:    billingInfo.RequestID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
-		log.Errorf("[%s] failed to marshal cost request: %v", pluginName, err)
+		log.Errorf("[%s] failed to marshal cost request: tenantId=%s consumerId=%s error=%v",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, err)
 		return
+	}
+
+	// Build request headers with tenant info and HMAC authentication
+	headers := [][2]string{
+		{"content-type", "application/json"},
+		{"x-internal-auth-sign-version", tenantInfo.SignVersion},
+		{"x-internal-auth-ts", tenantInfo.Timestamp},
+		{"x-internal-auth-nonce", tenantInfo.Nonce},
+		{"x-internal-auth-sign", tenantInfo.Signature},
+		{"x-consumer-id", tenantInfo.ConsumerID},
+		{"x-mse-consumer-name", tenantInfo.ConsumerName},
+		{"x-mse-tenant-id", tenantInfo.TenantID},
+		{"x-domain-resource-id", tenantInfo.DomainResourceID},
+		{"x-router-resource-id", tenantInfo.RouterResourceID},
 	}
 
 	// Make async HTTP call to billing service
@@ -635,41 +914,43 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, billingInfo 
 
 	log.Debugf("[%s] sending async cost deduction request: path=%s body=%s", pluginName, path, string(bodyBytes))
 
-	err = config.billingClient.Post(path, [][2]string{
-		{"content-type", "application/json"},
-	}, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
+	err = config.billingClient.Post(path, headers, bodyBytes, func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		log.Infof("[%s] async cost deduction response: status=%d body=%s", pluginName, statusCode, string(responseBody))
 
 		// Handle response in callback
 		if statusCode != http.StatusOK {
-			log.Errorf("[%s] async cost deduction failed: apikey=%s requestId=%s status=%d body=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, statusCode, string(responseBody))
+			log.Errorf("[%s] async cost deduction failed: tenantId=%s consumerId=%s consumerName=%s requestId=%s status=%d body=%s reason=http_error",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, statusCode, string(responseBody))
 			return
 		}
 
 		// Parse response
 		var costResp CostResponse
 		if err := json.Unmarshal(responseBody, &costResp); err != nil {
-			log.Errorf("[%s] failed to parse async cost response: apikey=%s requestId=%s error=%v body=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID, err, string(responseBody))
+			log.Errorf("[%s] failed to parse async cost response: tenantId=%s consumerId=%s consumerName=%s requestId=%s error=%v body=%s reason=parse_error",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, err, string(responseBody))
 			return
 		}
-
-		log.Infof("[%s] async cost deduction: apikey=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
 
 		// Check if cost deduction was successful
 		if !costResp.Success {
-			log.Warnf("[%s] async cost deduction failed: apikey=%s requestId=%s",
-				pluginName, maskApiKey(apiKey), billingInfo.RequestID)
+			errorMessage := "billing_service_returned_failure"
+			if costResp.Message != "" {
+				errorMessage = costResp.Message
+			}
+			log.Errorf("[%s] async cost deduction failed: tenantId=%s consumerId=%s consumerName=%s requestId=%s reason=%s",
+				pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, errorMessage)
 			return
 		}
+
+		log.Infof("[%s] async cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
 
 		log.Debugf("[%s] async cost deduction successful", pluginName)
 	}, 5000) // 5 second timeout
 
 	if err != nil {
-		log.Errorf("[%s] failed to send async cost deduction request: apikey=%s requestId=%s path=%s error=%v",
-			pluginName, maskApiKey(apiKey), billingInfo.RequestID, path, err)
+		log.Errorf("[%s] failed to send async cost deduction request: tenantId=%s consumerId=%s consumerName=%s requestId=%s path=%s error=%v reason=send_error",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, path, err)
 	}
 }
