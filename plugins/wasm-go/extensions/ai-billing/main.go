@@ -22,11 +22,12 @@ const (
 
 // Context keys for storing data across request lifecycle
 const (
-	CtxKeyTenantInfo    = "ai-billing-tenant-info"
-	CtxKeyApiKey        = "ai-billing-api-key" // Optional, for debug logging only
-	CtxKeyBillingInfo   = "ai-billing-info"
-	CtxKeyIsStreaming   = "ai-billing-is-streaming"
-	CtxKeyRequestDenied = "ai-billing-request-denied"
+	CtxKeyTenantInfo     = "ai-billing-tenant-info"
+	CtxKeyApiKey         = "ai-billing-api-key" // Optional, for debug logging only
+	CtxKeyConsumerApiKey = "ai-billing-consumer-apikey"
+	CtxKeyBillingInfo    = "ai-billing-info"
+	CtxKeyIsStreaming    = "ai-billing-is-streaming"
+	CtxKeyRequestDenied  = "ai-billing-request-denied"
 )
 
 func main() {}
@@ -97,6 +98,7 @@ type CostRequest struct {
 	RequestID    string `json:"request_id"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
+	ApiKey       string `json:"apikey"`
 	// Note: consumer_id, consumer_name, tenant_id are in headers, not body
 }
 
@@ -243,6 +245,16 @@ func maskApiKey(apiKey string) string {
 	return apiKey[:8] + "***"
 }
 
+// extractConsumerApiKey extracts the consumer API key from x-mse-consumer-apikey header
+// Returns empty string if header is not present
+func extractConsumerApiKey() string {
+	apiKey, err := proxywasm.GetHttpRequestHeader("x-mse-consumer-apikey")
+	if err != nil || apiKey == "" {
+		return ""
+	}
+	return apiKey
+}
+
 // extractTenantInfo extracts tenant information and HMAC authentication headers from the request
 func extractTenantInfo(ctx wrapper.HttpContext) (*TenantInfo, error) {
 	tenantInfo := &TenantInfo{}
@@ -345,6 +357,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.A
 	ctx.SetContext(CtxKeyTenantInfo, tenantInfo)
 	log.Infof("[%s] tenant info extracted: tenantId=%s consumerId=%s consumerName=%s",
 		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
+
+	// Extract consumer API key from x-mse-consumer-apikey header
+	consumerApiKey := extractConsumerApiKey()
+	ctx.SetContext(CtxKeyConsumerApiKey, consumerApiKey)
+	log.Debugf("[%s] consumer apikey extracted: %s", pluginName, maskApiKey(consumerApiKey))
 
 	// Optional: Extract API key for debug logging
 	apiKey, err := extractApiKey(ctx)
@@ -786,6 +803,12 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 	log.Infof("[%s] deducting cost: tenantId=%s consumerId=%s consumerName=%s",
 		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
+	// Get consumer API key from context
+	consumerApiKey := ""
+	if key, ok := ctx.GetContext(CtxKeyConsumerApiKey).(string); ok {
+		consumerApiKey = key
+	}
+
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
 		Provider:     billingInfo.Provider,
@@ -793,6 +816,7 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 		RequestID:    billingInfo.RequestID,
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
+		ApiKey:       consumerApiKey,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
@@ -880,6 +904,12 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 	log.Infof("[%s] deducting cost asynchronously: tenantId=%s consumerId=%s consumerName=%s",
 		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName)
 
+	// Get consumer API key from context
+	consumerApiKey := ""
+	if key, ok := ctx.GetContext(CtxKeyConsumerApiKey).(string); ok {
+		consumerApiKey = key
+	}
+
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
 		Provider:     billingInfo.Provider,
@@ -887,6 +917,7 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 		RequestID:    billingInfo.RequestID,
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
+		ApiKey:       consumerApiKey,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
