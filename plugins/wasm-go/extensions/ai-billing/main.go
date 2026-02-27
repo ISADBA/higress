@@ -788,9 +788,9 @@ func extractModel(ctx wrapper.HttpContext) string {
 
 // extractProvider extracts the provider information from context or route
 func extractProvider(ctx wrapper.HttpContext) string {
-	// Priority 1: Try to get from x-ai-Provider header (set by ai-proxy plugin)
+	// Priority 1: Try to get from x-request-llm-provider header (set by ai-proxy plugin)
 	// This header is user origin request add
-	if provider, err := proxywasm.GetHttpRequestHeader("x-ai-provider"); err == nil && provider != "" {
+	if provider, err := proxywasm.GetHttpRequestHeader("x-request-llm-provider"); err == nil && provider != "" {
 		return provider
 	}
 

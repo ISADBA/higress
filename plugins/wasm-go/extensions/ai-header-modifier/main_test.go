@@ -179,7 +179,7 @@ func TestJSONBodyProcessing(t *testing.T) {
 		// Verify headers were added
 		headers := host.GetRequestHeaders()
 		modelHeader := getHeader(headers, "x-model")
-		require.Equal(t, "openai/gpt-4", modelHeader)
+		require.Equal(t, "gpt-4", modelHeader)
 
 		providerHeader := getHeader(headers, "x-provider")
 		require.Equal(t, "openai", providerHeader)
@@ -425,7 +425,7 @@ func TestMultipartBodyWithProvider(t *testing.T) {
 
 		// Verify headers were added
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "openai/gpt-4", modelHeader)
+		require.Equal(t, "gpt-4", modelHeader)
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "openai", providerHeader)
@@ -469,7 +469,7 @@ func TestMultipartBodyWithComplexProvider(t *testing.T) {
 
 		// Verify headers - only first slash splits provider
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "azure/openai/gpt-4-turbo", modelHeader)
+		require.Equal(t, "openai/gpt-4-turbo", modelHeader)
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "azure", providerHeader)
@@ -629,7 +629,7 @@ func TestMultipartBodyMultipleParts(t *testing.T) {
 
 		// Verify headers
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "google/gemini-pro", modelHeader)
+		require.Equal(t, "gemini-pro", modelHeader)
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "google", providerHeader)
@@ -1109,5 +1109,127 @@ func TestFixedSourceHeadersAuthorityWithIPv4AndPort(t *testing.T) {
 		headers := host.GetRequestHeaders()
 		domain, _ := test.GetHeaderValue(headers, "x-mse-domain-name")
 		require.Equal(t, "192.168.1.1", domain)
+	})
+}
+
+func TestJSONBodyWithDefaultProvider(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test JSON request without provider in model name
+		requestBody := `{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello"}]}`
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/chat/completions"},
+			{"content-type", "application/json"},
+			{"content-length", "100"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify headers were added with default provider
+		headers := host.GetRequestHeaders()
+		modelHeader := getHeader(headers, "x-model")
+		require.Equal(t, "gpt-4o-mini", modelHeader)
+
+		providerHeader := getHeader(headers, "x-provider")
+		require.Equal(t, "default", providerHeader)
+
+		// Verify body was not modified (no provider to strip)
+		modifiedBody := host.GetRequestBody()
+		require.Contains(t, string(modifiedBody), `"model": "gpt-4o-mini"`)
+	})
+}
+
+func TestJSONBodyWithCustomDefaultProvider(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
+		"defaultProvider":    "openai",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test JSON request without provider in model name
+		requestBody := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/chat/completions"},
+			{"content-type", "application/json"},
+			{"content-length", "100"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify headers were added with custom default provider
+		headers := host.GetRequestHeaders()
+		modelHeader := getHeader(headers, "x-model")
+		require.Equal(t, "gpt-4", modelHeader)
+
+		providerHeader := getHeader(headers, "x-provider")
+		require.Equal(t, "openai", providerHeader)
+	})
+}
+
+func TestMultipartBodyWithDefaultProvider(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelKey":           "model",
+		"modelToHeader":      "x-model",
+		"addProviderHeader":  "x-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		boundary := "boundary123456789"
+		requestBody := buildMultipartBody(boundary, map[string]string{
+			"model":    "gpt-4o-mini",
+			"messages": "[{\"role\":\"user\",\"content\":\"Hello\"}]",
+		})
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/chat/completions"},
+			{"content-type", "multipart/form-data; boundary=" + boundary},
+			{"content-length", "100"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify headers were added with default provider
+		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
+		require.Equal(t, "gpt-4o-mini", modelHeader)
+
+		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
+		require.Equal(t, "default", providerHeader)
+
+		// Verify body was not modified (no provider to strip)
+		modifiedBody := string(host.GetRequestBody())
+		require.Contains(t, modifiedBody, "gpt-4o-mini")
 	})
 }

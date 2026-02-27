@@ -13,8 +13,9 @@ spec:
     # ========== AI Configuration ==========
     # Extract model and provider from LLM request bodies
     modelKey: model
-    modelToHeader: x-request-llm-model
+    modelToHeader: x-higress-llm-model
     addProviderHeader: x-request-llm-provider
+    defaultProvider: default  # Default provider when model doesn't contain "/"
     enableOnPathSuffix:
       - '*'
 

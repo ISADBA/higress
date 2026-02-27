@@ -59,6 +59,7 @@ type AiHeaderModifierConfig struct {
 	// AI functionality configuration
 	ModelKey           string   `yaml:"modelKey"`
 	AddProviderHeader  string   `yaml:"addProviderHeader"`
+	DefaultProvider    string   `yaml:"defaultProvider"`
 	ModelToHeader      string   `yaml:"modelToHeader"`
 	EnableOnPathSuffix []string `yaml:"enableOnPathSuffix"`
 
@@ -135,6 +136,17 @@ func parseConfig(json gjson.Result, config *AiHeaderModifierConfig, log log.Log)
 			return errors.New("addProviderHeader must be a string")
 		}
 		config.AddProviderHeader = addProviderHeader.String()
+	}
+
+	// Parse defaultProvider
+	if defaultProvider := json.Get("defaultProvider"); defaultProvider.Exists() {
+		if defaultProvider.Type != gjson.String {
+			return errors.New("defaultProvider must be a string")
+		}
+		config.DefaultProvider = defaultProvider.String()
+	} else {
+		// Set default value to "default" if not specified
+		config.DefaultProvider = "default"
 	}
 
 	// Parse modelToHeader
@@ -496,45 +508,54 @@ func processJSONBody(config AiHeaderModifierConfig, body []byte, log log.Log) {
 	modelStr := modelValue.String()
 	log.Debugf("Extracted model value: %s", modelStr)
 
-	// Add modelToHeader if configured
-	if config.ModelToHeader != "" {
-		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelStr)
+	// Extract provider if configured and model contains "/"
+	var modelName string
+	var provider string
+	if strings.Contains(modelStr, "/") {
+		idx := strings.Index(modelStr, "/")
+		provider = modelStr[:idx]
+		modelName = modelStr[idx+1:]
+	} else {
+		// Use default provider if model doesn't contain "/"
+		provider = config.DefaultProvider
+		modelName = modelStr
+	}
+
+	// Add provider header if configured
+	if config.AddProviderHeader != "" {
+		err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
 		if err != nil {
-			log.Warnf("Failed to add model header: %v", err)
+			log.Warnf("Failed to add provider header: %v", err)
 		} else {
-			log.Debugf("Added header %s: %s", config.ModelToHeader, modelStr)
+			log.Debugf("Added header %s: %s", config.AddProviderHeader, provider)
 		}
 	}
 
-	// Extract provider if configured and model contains "/"
-	if config.AddProviderHeader != "" {
-		if idx := strings.Index(modelStr, "/"); idx != -1 {
-			provider := modelStr[:idx]
-			modelName := modelStr[idx+1:]
-
-			// Add provider header
-			err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
-			if err != nil {
-				log.Warnf("Failed to add provider header: %v", err)
-			} else {
-				log.Debugf("Added header %s: %s", config.AddProviderHeader, provider)
-			}
-
-			// Rewrite body to replace model value with just the model name
-			newBody, err := sjson.SetBytes(body, config.ModelKey, modelName)
-			if err != nil {
-				log.Warnf("Failed to rewrite JSON body: %v", err)
-				return
-			}
-
-			err = proxywasm.ReplaceHttpRequestBody(newBody)
-			if err != nil {
-				log.Warnf("Failed to replace request body: %v", err)
-			} else {
-				log.Debugf("Rewrote body: model changed from '%s' to '%s'", modelStr, modelName)
-			}
+	// Add modelToHeader if configured (use modelName without provider prefix)
+	if config.ModelToHeader != "" {
+		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
+		if err != nil {
+			log.Warnf("Failed to add model header: %v", err)
 		} else {
-			log.Debugf("Model value '%s' does not contain '/', skipping provider extraction", modelStr)
+			log.Debugf("Added header %s: %s", config.ModelToHeader, modelName)
+		}
+	}
+
+	// Rewrite body if model originally contained "/"
+	if strings.Contains(modelStr, "/") {
+
+		// Rewrite body to replace model value with just the model name
+		newBody, err := sjson.SetBytes(body, config.ModelKey, modelName)
+		if err != nil {
+			log.Warnf("Failed to rewrite JSON body: %v", err)
+			return
+		}
+
+		err = proxywasm.ReplaceHttpRequestBody(newBody)
+		if err != nil {
+			log.Warnf("Failed to replace request body: %v", err)
+		} else {
+			log.Debugf("Rewrote body: model changed from '%s' to '%s'", modelStr, modelName)
 		}
 	}
 }
@@ -576,42 +597,50 @@ func processMultipartBody(config AiHeaderModifierConfig, body []byte, log log.Lo
 	modelValue := bodyStr[valueStartPos:valueEndPos]
 	log.Debugf("Extracted model value: %s", modelValue)
 
-	// Add modelToHeader if configured
-	if config.ModelToHeader != "" {
-		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelValue)
+	// Extract provider if configured and model contains "/"
+	var modelName string
+	var provider string
+	if strings.Contains(modelValue, "/") {
+		idx := strings.Index(modelValue, "/")
+		provider = modelValue[:idx]
+		modelName = modelValue[idx+1:]
+	} else {
+		// Use default provider if model doesn't contain "/"
+		provider = config.DefaultProvider
+		modelName = modelValue
+	}
+
+	// Add provider header if configured
+	if config.AddProviderHeader != "" {
+		err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
 		if err != nil {
-			log.Warnf("Failed to add model header: %v", err)
+			log.Warnf("Failed to add provider header: %v", err)
 		} else {
-			log.Debugf("Added header %s: %s", config.ModelToHeader, modelValue)
+			log.Debugf("Added header %s: %s", config.AddProviderHeader, provider)
 		}
 	}
 
-	// Extract provider if configured and model contains "/"
-	if config.AddProviderHeader != "" {
-		if idx := strings.Index(modelValue, "/"); idx != -1 {
-			provider := modelValue[:idx]
-			modelName := modelValue[idx+1:]
-
-			// Add provider header
-			err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
-			if err != nil {
-				log.Warnf("Failed to add provider header: %v", err)
-			} else {
-				log.Debugf("Added header %s: %s", config.AddProviderHeader, provider)
-			}
-
-			// Rewrite body to replace model value
-			newBody := rewriteMultipartBody(body, config.ModelKey, modelValue, modelName, log)
-			if newBody != nil {
-				err = proxywasm.ReplaceHttpRequestBody(newBody)
-				if err != nil {
-					log.Warnf("Failed to replace request body: %v", err)
-				} else {
-					log.Debugf("Rewrote multipart body: model changed from '%s' to '%s'", modelValue, modelName)
-				}
-			}
+	// Add modelToHeader if configured (use modelName without provider prefix)
+	if config.ModelToHeader != "" {
+		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
+		if err != nil {
+			log.Warnf("Failed to add model header: %v", err)
 		} else {
-			log.Debugf("Model value '%s' does not contain '/', skipping provider extraction", modelValue)
+			log.Debugf("Added header %s: %s", config.ModelToHeader, modelName)
+		}
+	}
+
+	// Rewrite body if model originally contained "/"
+	if strings.Contains(modelValue, "/") {
+		// Rewrite body to replace model value
+		newBody := rewriteMultipartBody(body, config.ModelKey, modelValue, modelName, log)
+		if newBody != nil {
+			err := proxywasm.ReplaceHttpRequestBody(newBody)
+			if err != nil {
+				log.Warnf("Failed to replace request body: %v", err)
+			} else {
+				log.Debugf("Rewrote multipart body: model changed from '%s' to '%s'", modelValue, modelName)
+			}
 		}
 	}
 }

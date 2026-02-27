@@ -33,11 +33,12 @@ enableOnPathSuffix:
 modelKey: model
 modelToHeader: x-higress-llm-model
 addProviderHeader: x-higress-llm-provider
+defaultProvider: default  # 当模型不包含 "/" 时使用的默认提供商
 enableOnPathSuffix:
   - /v1/chat/completions
 ```
 
-请求示例:
+请求示例 1 (包含提供商):
 ```json
 {
   "model": "openai/gpt-4",
@@ -46,9 +47,22 @@ enableOnPathSuffix:
 ```
 
 处理后:
-- 添加请求头: `x-higress-llm-model: openai/gpt-4`
+- 添加请求头: `x-higress-llm-model: gpt-4`
 - 添加请求头: `x-higress-llm-provider: openai`
 - 请求体中的 model 字段被重写为: `"model": "gpt-4"`
+
+请求示例 2 (不包含提供商):
+```json
+{
+  "model": "gpt-4o-mini",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+处理后:
+- 添加请求头: `x-higress-llm-model: gpt-4o-mini`
+- 添加请求头: `x-higress-llm-provider: default`
+- 请求体保持不变
 
 ### 场景 3: 全路径处理
 
@@ -68,6 +82,7 @@ enableOnPathSuffix:
 | modelKey | string | 选填 | "model" | 请求体中模型字段的键名 |
 | modelToHeader | string | 选填(至少配置一个) | - | 将模型值添加到此请求头 |
 | addProviderHeader | string | 选填(至少配置一个) | - | 将提取的提供商信息添加到此请求头 |
+| defaultProvider | string | 选填 | "default" | 当模型名称不包含 "/" 时使用的默认提供商 |
 | enableOnPathSuffix | array of string | 选填 | [默认路径列表] | 启用插件的路径后缀列表,支持通配符 "*" |
 
 **注意**: `modelToHeader` 和 `addProviderHeader` 至少需要配置一个。

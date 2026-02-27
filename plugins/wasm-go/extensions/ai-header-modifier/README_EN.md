@@ -33,11 +33,12 @@ When using a unified API format to support multiple LLM providers, you can imple
 modelKey: model
 modelToHeader: x-higress-llm-model
 addProviderHeader: x-higress-llm-provider
+defaultProvider: default  # Default provider when model doesn't contain "/"
 enableOnPathSuffix:
   - /v1/chat/completions
 ```
 
-Request example:
+Request example 1 (with provider):
 ```json
 {
   "model": "openai/gpt-4",
@@ -46,9 +47,22 @@ Request example:
 ```
 
 After processing:
-- Added header: `x-higress-llm-model: openai/gpt-4`
+- Added header: `x-higress-llm-model: gpt-4`
 - Added header: `x-higress-llm-provider: openai`
 - Model field in request body rewritten to: `"model": "gpt-4"`
+
+Request example 2 (without provider):
+```json
+{
+  "model": "gpt-4o-mini",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+After processing:
+- Added header: `x-higress-llm-model: gpt-4o-mini`
+- Added header: `x-higress-llm-provider: default`
+- Request body remains unchanged
 
 ### Use Case 3: All-Path Processing
 
@@ -68,6 +82,7 @@ enableOnPathSuffix:
 | modelKey | string | Optional | "model" | Key name of the model field in request body |
 | modelToHeader | string | Optional (at least one required) | - | Add model value to this request header |
 | addProviderHeader | string | Optional (at least one required) | - | Add extracted provider information to this request header |
+| defaultProvider | string | Optional | "default" | Default provider to use when model name doesn't contain "/" |
 | enableOnPathSuffix | array of string | Optional | [default path list] | List of path suffixes to enable the plugin, supports wildcard "*" |
 
 **Note**: At least one of `modelToHeader` and `addProviderHeader` must be configured.
