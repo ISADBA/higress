@@ -409,6 +409,26 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AiHeaderModifierConfig
 		return types.ActionContinue
 	}
 
+	// Check for Gemini protocol
+	if isGeminiProtocol(path) {
+		processGeminiProtocol(config, path, log)
+
+		// Check if request has body
+		if !ctx.HasRequestBody() {
+			log.Debug("No request body, skipping body processing")
+			return types.ActionContinue
+		}
+
+		// Mark as Gemini mode
+		config.mode = ModeJSON // Gemini uses JSON format
+		ctx.SetContext("config", config)
+		ctx.SetContext("isGemini", true)
+
+		// Remove content-length to allow request body buffering
+		proxywasm.RemoveHttpRequestHeader("content-length")
+		return types.HeaderStopIteration
+	}
+
 	// Strip query parameters
 	uri := path
 	if idx := strings.Index(path, "?"); idx != -1 {
@@ -470,6 +490,24 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AiHeaderModifierConfig, b
 	storedConfig, ok := ctx.GetContext("config").(AiHeaderModifierConfig)
 	if !ok {
 		log.Warn("Failed to retrieve config from context")
+		return types.ActionContinue
+	}
+
+	// Check if this is a Gemini protocol request
+	if isGemini, ok := ctx.GetContext("isGemini").(bool); ok && isGemini {
+		// Get model name and provider from headers
+		modelName, _ := proxywasm.GetHttpRequestHeader(storedConfig.ModelToHeader)
+		provider, _ := proxywasm.GetHttpRequestHeader(storedConfig.AddProviderHeader)
+
+		if modelName != "" {
+			newBody := addModelToBody(body, modelName, provider, log)
+			if len(newBody) > 0 && len(newBody) != len(body) {
+				err := proxywasm.ReplaceHttpRequestBody(newBody)
+				if err != nil {
+					log.Warnf("Failed to replace request body: %v", err)
+				}
+			}
+		}
 		return types.ActionContinue
 	}
 
@@ -698,9 +736,181 @@ func extractBoundary(contentType string) string {
 	return params["boundary"]
 }
 
+// isGeminiProtocol checks if the request path uses Gemini native protocol
+// Gemini protocol paths start with /v1/models/
+func isGeminiProtocol(path string) bool {
+	// Extract URI part (remove query parameters)
+	uri := path
+	if idx := strings.Index(path, "?"); idx != -1 {
+		uri = path[:idx]
+	}
+	return strings.HasPrefix(uri, "/v1/models/")
+}
+
 // Helper function to create multipart part header
 func createPartHeader(formName string) textproto.MIMEHeader {
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", "form-data; name=\""+formName+"\"")
 	return h
+}
+
+// extractModelFromPath extracts the model name from Gemini protocol path
+// Path format: /v1/models/{model-name}:operation or /v1/models/{model-name}/operation
+func extractModelFromPath(path string) string {
+	// Remove query parameters
+	uri := path
+	if idx := strings.Index(path, "?"); idx != -1 {
+		uri = path[:idx]
+	}
+
+	// Path format: /v1/models/{model}:operation or /v1/models/{model}/operation
+	prefix := "/v1/models/"
+	if !strings.HasPrefix(uri, prefix) {
+		return ""
+	}
+
+	// Extract model name part
+	modelPart := uri[len(prefix):]
+
+	// Find : or / as the end marker of model name
+	endIdx := len(modelPart)
+	if idx := strings.IndexAny(modelPart, ":/"); idx != -1 {
+		endIdx = idx
+	}
+
+	return modelPart[:endIdx]
+}
+
+// parseQueryParams parses URL query string into key-value map
+func parseQueryParams(queryString string) map[string]string {
+	params := make(map[string]string)
+	if queryString == "" {
+		return params
+	}
+
+	// Split parameter pairs
+	pairs := strings.Split(queryString, "&")
+	for _, pair := range pairs {
+		// Split key-value
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 {
+			// Simple URL decoding (handle + to space)
+			key := kv[0]
+			value := kv[1]
+			value = strings.ReplaceAll(value, "+", " ")
+			params[key] = value
+		}
+	}
+
+	return params
+}
+
+// processGeminiProtocol processes Gemini native protocol requests
+// Extracts model name, API key, and provider from URL path and query parameters
+func processGeminiProtocol(config AiHeaderModifierConfig, path string, log log.Log) {
+	log.Debug("Detected Gemini native protocol")
+
+	// Extract model name
+	modelName := extractModelFromPath(path)
+	if modelName == "" {
+		log.Warn("Failed to extract model name from Gemini protocol path")
+	} else {
+		log.Debugf("Extracted model name: %s", modelName)
+		// Set model header
+		if config.ModelToHeader != "" {
+			err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
+			if err != nil {
+				log.Warnf("Failed to set model header: %v", err)
+			} else {
+				log.Debugf("Set header %s=%s", config.ModelToHeader, modelName)
+			}
+		}
+	}
+
+	// Parse query parameters
+	queryString := ""
+	if idx := strings.Index(path, "?"); idx != -1 {
+		queryString = path[idx+1:]
+	}
+
+	params := parseQueryParams(queryString)
+
+	// Extract API key
+	if apiKey, ok := params["key"]; ok && apiKey != "" {
+		log.Debug("Extracted API key from query parameter")
+
+		// Set x-mse-consumer-apikey
+		err := proxywasm.ReplaceHttpRequestHeader("x-mse-consumer-apikey", apiKey)
+		if err != nil {
+			log.Warnf("Failed to set x-mse-consumer-apikey header: %v", err)
+		} else {
+			log.Debug("Set header x-mse-consumer-apikey")
+		}
+
+		// Check if x-api-key exists or is empty
+		existingApiKey, err := proxywasm.GetHttpRequestHeader("x-api-key")
+		if err != nil || existingApiKey == "" {
+			// x-api-key doesn't exist or is empty, set it
+			err := proxywasm.ReplaceHttpRequestHeader("x-api-key", apiKey)
+			if err != nil {
+				log.Warnf("Failed to set x-api-key header: %v", err)
+			} else {
+				log.Debug("Set header x-api-key")
+			}
+		} else {
+			log.Debug("x-api-key header already exists, skipping")
+		}
+	} else {
+		log.Warn("API key not found in query parameters")
+	}
+
+	// Extract provider
+	provider := config.DefaultProvider
+	if p, ok := params["provider"]; ok && p != "" {
+		provider = p
+		log.Debugf("Using provider from query parameter: %s", provider)
+	} else {
+		log.Debugf("Using default provider: %s", provider)
+	}
+
+	// Set provider header
+	if config.AddProviderHeader != "" {
+		err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
+		if err != nil {
+			log.Warnf("Failed to set provider header: %v", err)
+		} else {
+			log.Debugf("Set header %s=%s", config.AddProviderHeader, provider)
+		}
+	}
+}
+
+// addModelToBody adds model attribute to Gemini request body
+func addModelToBody(body []byte, modelName string, provider string, log log.Log) []byte {
+	// Validate JSON
+	if !gjson.ValidBytes(body) {
+		log.Warn("Invalid JSON body, skipping model addition")
+		return body
+	}
+
+	// Check if model attribute already exists
+	if gjson.GetBytes(body, "model").Exists() {
+		log.Debug("Model property already exists in body, skipping")
+		return body
+	}
+
+	// Construct model value
+	modelValue := modelName
+	if provider != "default" {
+		modelValue = provider + "/" + modelName
+	}
+
+	// Add model attribute
+	newBody, err := sjson.SetBytes(body, "model", modelValue)
+	if err != nil {
+		log.Warnf("Failed to add model property to body: %v", err)
+		return body
+	}
+
+	log.Debugf("Added model property to body: %s", modelValue)
+	return newBody
 }

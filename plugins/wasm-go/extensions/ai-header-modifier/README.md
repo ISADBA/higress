@@ -355,3 +355,164 @@ x-api-key: sk-priority2
 
 **结果：** 使用 `sk-priority1`（优先级 1）
 
+
+
+## Google Gemini 原生协议支持
+
+插件自动检测并处理 Google Gemini 原生 API 协议请求。Gemini 协议使用独特的 URL 格式，其中模型名称和 API 密钥通过 URL 路径和查询参数传递。
+
+### Gemini 协议特性
+
+- **自动检测**: 插件自动识别以 `/v1/models/` 开头的路径为 Gemini 协议
+- **URL 解析**: 从 URL 路径提取模型名称，从查询参数提取 API 密钥和提供商
+- **请求头设置**: 自动设置 `x-higress-llm-model`、`x-mse-consumer-apikey`、`x-api-key` 和 `x-request-llm-provider` 请求头
+- **请求体增强**: 自动向请求体添加 `model` 属性（如果不存在）
+
+### Gemini URL 格式
+
+```
+/v1/models/{model-name}:{operation}?key={api-key}&provider={provider}
+```
+
+**组成部分：**
+- **路径前缀**: `/v1/models/` - 用于识别 Gemini 协议
+- **模型名称**: `{model-name}` - 模型标识符（例如 `gemini-3.1-pro-preview`）
+- **操作**: `:{operation}` - API 操作（例如 `:generateContent`）
+- **查询参数**:
+  - `key`: API 密钥（必需）
+  - `provider`: 提供商标识符（可选，默认使用 `defaultProvider` 配置）
+
+### 使用示例
+
+#### 示例 1: 基本 Gemini 请求
+
+**请求：**
+```bash
+curl -X POST "https://api.example.com/v1/models/gemini-3.1-pro-preview:generateContent?key=ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          { "text": "who are you." }
+        ]
+      }
+    ]
+  }'
+```
+
+**插件处理：**
+1. 检测到 Gemini 协议（路径以 `/v1/models/` 开头）
+2. 提取模型名称：`gemini-3.1-pro-preview`
+3. 提取 API 密钥：`ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
+4. 设置请求头：
+   - `x-higress-llm-model: gemini-3.1-pro-preview`
+   - `x-mse-consumer-apikey: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
+   - `x-api-key: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`（如果原请求头不存在或为空）
+   - `x-request-llm-provider: default`（使用默认提供商）
+5. 向请求体添加 `model` 属性：`"model": "gemini-3.1-pro-preview"`
+
+#### 示例 2: 带提供商参数的 Gemini 请求
+
+**请求：**
+```bash
+curl -X POST "https://api.example.com/v1/models/gemini-pro:generateContent?key=sk-abc123&provider=gemini" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          { "text": "Hello" }
+        ]
+      }
+    ]
+  }'
+```
+
+**插件处理：**
+1. 提取模型名称：`gemini-pro`
+2. 提取 API 密钥：`sk-abc123`
+3. 提取提供商：`gemini`（从查询参数）
+4. 设置请求头：
+   - `x-higress-llm-model: gemini-pro`
+   - `x-mse-consumer-apikey: sk-abc123`
+   - `x-api-key: sk-abc123`（如果原请求头不存在或为空）
+   - `x-request-llm-provider: gemini`
+5. 向请求体添加 `model` 属性：`"model": "gemini/gemini-pro"`
+
+### Gemini 协议配置
+
+Gemini 协议处理使用与标准 AI 功能相同的配置参数：
+
+```yaml
+modelToHeader: x-higress-llm-model
+addProviderHeader: x-request-llm-provider
+defaultProvider: default
+```
+
+**注意事项：**
+1. Gemini 协议请求不受 `enableOnPathSuffix` 限制，自动处理所有以 `/v1/models/` 开头的路径
+2. 如果请求头中已存在 `x-api-key` 且有值，插件不会覆盖它
+3. API 密钥同时设置到 `x-mse-consumer-apikey` 和 `x-api-key`（如果后者不存在或为空）
+4. 如果请求体已包含 `model` 属性，插件不会修改它
+5. 提供商参数是可选的，如果不提供则使用 `defaultProvider` 配置值
+
+### 请求头映射
+
+| 源 | 目标请求头 | 说明 |
+|---|---|---|
+| URL 路径中的模型名称 | `x-higress-llm-model` | 从路径提取的模型名称 |
+| 查询参数 `key` | `x-mse-consumer-apikey` | API 密钥（用于消费者识别） |
+| 查询参数 `key` | `x-api-key` | API 密钥（仅当 x-api-key 不存在或为空时设置） |
+| 查询参数 `provider` 或配置的默认值 | `x-request-llm-provider` | 提供商标识符 |
+
+### 请求体增强
+
+对于 Gemini 协议请求，如果请求体不包含 `model` 属性，插件将自动添加：
+
+**添加规则：**
+- 如果 `provider == "default"`: `model = "{model-name}"`
+- 如果 `provider != "default"`: `model = "{provider}/{model-name}"`
+
+**示例：**
+
+原始请求体：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ]
+}
+```
+
+修改后（provider = "gemini"）：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ],
+  "model": "gemini/gemini-3.1-pro-preview"
+}
+```
+
+修改后（provider = "default"）：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ],
+  "model": "gemini-3.1-pro-preview"
+}
+```

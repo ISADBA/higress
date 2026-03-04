@@ -1233,3 +1233,370 @@ func TestMultipartBodyWithDefaultProvider(t *testing.T) {
 		require.Contains(t, modifiedBody, "gpt-4o-mini")
 	})
 }
+
+// TestGeminiProtocolBasic tests basic Gemini protocol detection and processing
+func TestGeminiProtocolBasic(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		requestBody := `{
+			"contents": [
+				{
+					"parts": [
+						{"text": "who are you"}
+					]
+				}
+			]
+		}`
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-3.1-pro-preview:generateContent?key=ak_test123"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		// Verify headers were set
+		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-higress-llm-model")
+		require.Equal(t, "gemini-3.1-pro-preview", modelHeader)
+
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "ak_test123", apiKeyHeader)
+
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "ak_test123", xApiKeyHeader)
+
+		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-request-llm-provider")
+		require.Equal(t, "default", providerHeader)
+
+		// Process body
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify body was modified
+		body := string(host.GetRequestBody())
+		require.Contains(t, body, `"model":"gemini-3.1-pro-preview"`)
+	})
+}
+
+// TestGeminiProtocolWithProvider tests Gemini protocol with provider parameter
+func TestGeminiProtocolWithProvider(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		requestBody := `{
+			"contents": [
+				{
+					"parts": [
+						{"text": "Hello"}
+					]
+				}
+			]
+		}`
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-pro:generateContent?key=sk-abc123&provider=gemini"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		// Verify headers
+		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-higress-llm-model")
+		require.Equal(t, "gemini-pro", modelHeader)
+
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "sk-abc123", apiKeyHeader)
+
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "sk-abc123", xApiKeyHeader)
+
+		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-request-llm-provider")
+		require.Equal(t, "gemini", providerHeader)
+
+		// Process body
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify body was modified with provider prefix
+		body := string(host.GetRequestBody())
+		require.Contains(t, body, `"model":"gemini/gemini-pro"`)
+	})
+}
+
+// TestGeminiProtocolExistingApiKey tests that existing x-api-key is not overwritten
+func TestGeminiProtocolExistingApiKey(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-pro:generateContent?key=sk-test"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+			{"x-api-key", "sk-existing-key"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		// Verify x-api-key was NOT overwritten
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "sk-existing-key", xApiKeyHeader)
+
+		// But x-mse-consumer-apikey should still be set
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "sk-test", apiKeyHeader)
+	})
+}
+
+// TestGeminiProtocolExistingModelInBody tests that existing model in body is not modified
+func TestGeminiProtocolExistingModelInBody(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		requestBody := `{
+			"model": "existing-model",
+			"contents": [
+				{
+					"parts": [
+						{"text": "test"}
+					]
+				}
+			]
+		}`
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-pro:generateContent?key=sk-test"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify body was NOT modified (existing model preserved)
+		body := string(host.GetRequestBody())
+		require.Contains(t, body, `"model": "existing-model"`)
+		require.NotContains(t, body, `"model":"gemini-pro"`)
+	})
+}
+
+// TestGeminiProtocolMissingApiKey tests handling of missing API key
+func TestGeminiProtocolMissingApiKey(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-pro:generateContent"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		// Verify model header was set but API key headers were not
+		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-higress-llm-model")
+		require.Equal(t, "gemini-pro", modelHeader)
+
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "", apiKeyHeader)
+
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "", xApiKeyHeader)
+	})
+}
+
+// TestIsGeminiProtocol tests the isGeminiProtocol function
+func TestIsGeminiProtocol(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{
+			name:     "valid gemini path with colon operation",
+			path:     "/v1/models/gemini-pro:generateContent?key=test",
+			expected: true,
+		},
+		{
+			name:     "valid gemini path with slash operation",
+			path:     "/v1/models/gemini-pro/generateContent",
+			expected: true,
+		},
+		{
+			name:     "valid gemini path without operation",
+			path:     "/v1/models/gemini-pro",
+			expected: true,
+		},
+		{
+			name:     "non-gemini path",
+			path:     "/v1/chat/completions",
+			expected: false,
+		},
+		{
+			name:     "similar but not gemini path",
+			path:     "/v1/model/gemini-pro",
+			expected: false,
+		},
+		{
+			name:     "empty path",
+			path:     "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isGeminiProtocol(tt.path)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestExtractModelFromPath tests the extractModelFromPath function
+func TestExtractModelFromPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{
+			name:     "model with colon operation",
+			path:     "/v1/models/gemini-3.1-pro-preview:generateContent",
+			expected: "gemini-3.1-pro-preview",
+		},
+		{
+			name:     "model with slash operation",
+			path:     "/v1/models/gemini-pro/generateContent",
+			expected: "gemini-pro",
+		},
+		{
+			name:     "model without operation",
+			path:     "/v1/models/gemini-pro",
+			expected: "gemini-pro",
+		},
+		{
+			name:     "model with query parameters",
+			path:     "/v1/models/gemini-pro:generateContent?key=test",
+			expected: "gemini-pro",
+		},
+		{
+			name:     "invalid path",
+			path:     "/v1/chat/completions",
+			expected: "",
+		},
+		{
+			name:     "empty model name",
+			path:     "/v1/models/:generateContent",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractModelFromPath(tt.path)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestParseQueryParams tests the parseQueryParams function
+func TestParseQueryParams(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		expected map[string]string
+	}{
+		{
+			name:  "single parameter",
+			query: "key=abc123",
+			expected: map[string]string{
+				"key": "abc123",
+			},
+		},
+		{
+			name:  "multiple parameters",
+			query: "key=abc123&provider=gemini&version=v1",
+			expected: map[string]string{
+				"key":      "abc123",
+				"provider": "gemini",
+				"version":  "v1",
+			},
+		},
+		{
+			name:  "parameter with plus sign",
+			query: "key=abc+123",
+			expected: map[string]string{
+				"key": "abc 123",
+			},
+		},
+		{
+			name:     "empty query string",
+			query:    "",
+			expected: map[string]string{},
+		},
+		{
+			name:  "parameter without value",
+			query: "key=&provider=gemini",
+			expected: map[string]string{
+				"key":      "",
+				"provider": "gemini",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseQueryParams(tt.query)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
