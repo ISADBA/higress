@@ -409,6 +409,7 @@ curl -X POST "https://api.example.com/v1/models/gemini-3.1-pro-preview:generateC
    - `x-higress-llm-model: gemini-3.1-pro-preview`
    - `x-mse-consumer-apikey: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
    - `x-api-key: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`（如果原请求头不存在或为空）
+   - `Authorization: Bearer ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
    - `x-request-llm-provider: default`（使用默认提供商）
 5. 向请求体添加 `model` 属性：`"model": "gemini-3.1-pro-preview"`
 
@@ -437,6 +438,7 @@ curl -X POST "https://api.example.com/v1/models/gemini-pro:generateContent?key=s
    - `x-higress-llm-model: gemini-pro`
    - `x-mse-consumer-apikey: sk-abc123`
    - `x-api-key: sk-abc123`（如果原请求头不存在或为空）
+   - `Authorization: Bearer sk-abc123`
    - `x-request-llm-provider: gemini`
 5. 向请求体添加 `model` 属性：`"model": "gemini/gemini-pro"`
 
@@ -453,7 +455,7 @@ defaultProvider: default
 **注意事项：**
 1. Gemini 协议请求不受 `enableOnPathSuffix` 限制，自动处理所有以 `/v1/models/` 开头的路径
 2. 如果请求头中已存在 `x-api-key` 且有值，插件不会覆盖它
-3. API 密钥同时设置到 `x-mse-consumer-apikey` 和 `x-api-key`（如果后者不存在或为空）
+3. API 密钥同时设置到 `x-mse-consumer-apikey`、`x-api-key`（如果后者不存在或为空）和 `Authorization`（Bearer token 格式）
 4. 如果请求体已包含 `model` 属性，插件不会修改它
 5. 提供商参数是可选的，如果不提供则使用 `defaultProvider` 配置值
 
@@ -464,6 +466,7 @@ defaultProvider: default
 | URL 路径中的模型名称 | `x-higress-llm-model` | 从路径提取的模型名称 |
 | 查询参数 `key` | `x-mse-consumer-apikey` | API 密钥（用于消费者识别） |
 | 查询参数 `key` | `x-api-key` | API 密钥（仅当 x-api-key 不存在或为空时设置） |
+| 查询参数 `key` | `Authorization` | Bearer token 格式的 API 密钥（`Bearer {api-key}`） |
 | 查询参数 `provider` 或配置的默认值 | `x-request-llm-provider` | 提供商标识符 |
 
 ### 请求体增强

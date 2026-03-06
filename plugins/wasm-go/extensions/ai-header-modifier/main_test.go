@@ -1600,3 +1600,38 @@ func TestParseQueryParams(t *testing.T) {
 		})
 	}
 }
+
+// TestGeminiProtocolAuthorizationHeader tests that Authorization header is set with Bearer token format
+func TestGeminiProtocolAuthorizationHeader(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "gemini",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/models/gemini-3.1-pro-preview:generateContent?key=ak_2XrUfEMUB1Uo3GNoxbK8YnS3sdqE2iN5x4C5wEdEgYk"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		// Verify Authorization header was set with Bearer token format
+		authHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "Authorization")
+		require.Equal(t, "Bearer ak_2XrUfEMUB1Uo3GNoxbK8YnS3sdqE2iN5x4C5wEdEgYk", authHeader)
+
+		// Verify other headers were also set
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "ak_2XrUfEMUB1Uo3GNoxbK8YnS3sdqE2iN5x4C5wEdEgYk", apiKeyHeader)
+
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "ak_2XrUfEMUB1Uo3GNoxbK8YnS3sdqE2iN5x4C5wEdEgYk", xApiKeyHeader)
+	})
+}

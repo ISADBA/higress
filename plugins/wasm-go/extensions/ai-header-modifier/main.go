@@ -860,6 +860,15 @@ func processGeminiProtocol(config AiHeaderModifierConfig, path string, log log.L
 		} else {
 			log.Debug("x-api-key header already exists, skipping")
 		}
+
+		// Set Authorization header with Bearer token format
+		authHeader := "Bearer " + apiKey
+		err = proxywasm.ReplaceHttpRequestHeader("Authorization", authHeader)
+		if err != nil {
+			log.Warnf("Failed to set Authorization header: %v", err)
+		} else {
+			log.Debug("Set header Authorization with Bearer token")
+		}
 	} else {
 		log.Warn("API key not found in query parameters")
 	}
