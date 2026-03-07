@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -61,13 +62,40 @@ func (g *geminiProviderInitializer) DefaultCapabilities() map[string]string {
 }
 
 func (g *geminiProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
+	// 如果未配置自定义 URL，使用默认配置
+	if config.GetGeminiCustomUrl() == "" {
+		config.setDefaultCapabilities(g.DefaultCapabilities())
+		return &geminiProvider{
+			config:       config,
+			contextCache: createContextCache(&config),
+			client: wrapper.NewClusterClient(wrapper.RouteCluster{
+				Host: geminiDomain,
+			}),
+		}, nil
+	}
+
+	// 解析自定义 URL
+	customUrl := strings.TrimPrefix(strings.TrimPrefix(config.GetGeminiCustomUrl(), "http://"), "https://")
+	pairs := strings.SplitN(customUrl, "/", 2)
+	customPath := "/"
+	if len(pairs) == 2 {
+		customPath += pairs[1]
+	}
+
+	// 设置 capabilities
 	config.setDefaultCapabilities(g.DefaultCapabilities())
+
+	log.Debugf("ai-proxy: gemini provider customDomain:%s, customPath:%s",
+		pairs[0], customPath)
+
 	return &geminiProvider{
 		config:       config,
 		contextCache: createContextCache(&config),
 		client: wrapper.NewClusterClient(wrapper.RouteCluster{
-			Host: geminiDomain,
+			Host: pairs[0],
 		}),
+		customDomain: pairs[0],
+		customPath:   customPath,
 	}, nil
 }
 
@@ -76,6 +104,10 @@ type geminiProvider struct {
 	contextCache *contextCache
 
 	client wrapper.HttpClient
+
+	// 新增字段
+	customDomain string // 自定义域名，如 "custom.gemini.com"
+	customPath   string // 自定义路径，如 "/custom/prefix" 或 "/"
 }
 
 func (g *geminiProvider) GetProviderType() string {
@@ -89,7 +121,14 @@ func (g *geminiProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiNa
 }
 
 func (g *geminiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header) {
-	util.OverwriteRequestHostHeader(headers, geminiDomain)
+	// 设置 Host 头
+	if g.customDomain != "" {
+		util.OverwriteRequestHostHeader(headers, g.customDomain)
+	} else {
+		util.OverwriteRequestHostHeader(headers, geminiDomain)
+	}
+
+	// 设置 API Key 头（保持不变）
 	headers.Set(geminiApiKeyHeader, g.config.GetApiTokenInUse(ctx))
 	util.OverwriteRequestAuthorizationHeader(headers, "")
 }
@@ -304,7 +343,12 @@ func (g *geminiProvider) getRequestPath(apiName ApiName, model string, stream bo
 	}
 	switch apiName {
 	case ApiNameModels:
-		return fmt.Sprintf("/%s/%s", g.config.apiVersion, geminiModelsPath)
+		standardPath := fmt.Sprintf("/%s/%s", g.config.apiVersion, geminiModelsPath)
+		// 如果有自定义路径，拼接自定义前缀和标准路径
+		if g.customPath != "/" {
+			return path.Join(g.customPath, standardPath)
+		}
+		return standardPath
 	case ApiNameEmbeddings:
 		action = geminiEmbeddingPath
 	case ApiNameChatCompletion:
@@ -320,7 +364,16 @@ func (g *geminiProvider) getRequestPath(apiName ApiName, model string, stream bo
 	case ApiNameGeminiStreamGenerateContent:
 		action = geminiChatCompletionStreamPath
 	}
-	return fmt.Sprintf("/%s/models/%s:%s", g.config.apiVersion, model, action)
+
+	// 构建标准路径: /{version}/models/{model}:{action}
+	standardPath := fmt.Sprintf("/%s/models/%s:%s", g.config.apiVersion, model, action)
+
+	// 如果有自定义路径，拼接自定义前缀和标准路径
+	if g.customPath != "/" {
+		return path.Join(g.customPath, standardPath)
+	}
+
+	return standardPath
 }
 
 type geminiGenerationContentRequest struct {

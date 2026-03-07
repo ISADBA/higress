@@ -290,6 +290,7 @@ Gemini 所对应的 `type` 为 `gemini`。它特有的配置字段如下：
 
 | 名称                   | 数据类型      | 填写要求 | 默认值   | 描述                                                         |
 | ---------------------- | ------------- | -------- | -------- | ------------------------------------------------------------ |
+| `geminiCustomUrl`      | string        | 非必填   | -        | 自定义的 Gemini 服务地址，用于代理或镜像服务。支持仅域名（如 `custom.gemini.com`）、域名+端口（如 `custom.gemini.com:8080`）或域名+路径前缀（如 `custom.gemini.com/api/v1`）。未配置时使用默认域名 `generativelanguage.googleapis.com`。 |
 | `geminiSafetySetting`  | map of string | 非必填   | -        | Gemini AI 内容过滤和安全级别设定。参考[Safety settings](https://ai.google.dev/gemini-api/docs/safety-settings) |
 | `apiVersion`           | string        | 非必填   | `v1beta` | 用于指定 API 的版本, 可选择 `v1` 或 `v1beta` 。 版本差异请参考[API versions explained](https://ai.google.dev/gemini-api/docs/api-versions)。 |
 | `geminiThinkingBudget` | number        | 非必填   | -        | gemini2.5系列的参数，0是不开启思考，-1动态调整，具体参数指可参考官网 |
@@ -1825,6 +1826,28 @@ provider:
     "HARM_CATEGORY_HARASSMENT" :"BLOCK_NONE"
     "HARM_CATEGORY_DANGEROUS_CONTENT" :"BLOCK_NONE"
 ```
+
+**使用自定义 URL 的配置示例**
+
+如果需要通过代理或镜像服务访问 Gemini API，可以配置 `geminiCustomUrl`：
+
+```yaml
+provider:
+  type: gemini
+  apiTokens:
+    - "YOUR_GEMINI_API_TOKEN"
+  # 仅域名配置
+  geminiCustomUrl: "custom.gemini.com"
+  # 或者带路径前缀的配置
+  # geminiCustomUrl: "https://proxy.example.com/gemini/api"
+  modelMapping:
+    "*": "gemini-pro"
+```
+
+配置说明：
+- 仅域名：`custom.gemini.com` - 只替换域名，保持原有路径
+- 域名+端口：`custom.gemini.com:8080` - 替换域名和端口
+- 域名+路径前缀：`custom.gemini.com/api/v1` - 替换域名并在路径前添加前缀
 
 **请求示例**
 

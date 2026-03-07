@@ -256,9 +256,10 @@ For Gemini, the corresponding `type` is `gemini`. Its unique configuration field
 
 | Name                  | Data Type | Filling Requirements | Default Value | Description                                                                                              |
 |---------------------|----------|----------------------|---------------|---------------------------------------------------------------------------------------------------------|
+| `geminiCustomUrl` | string   | Optional             | -             | Custom Gemini service URL for proxy or mirror services. Supports domain only (e.g., `custom.gemini.com`), domain with port (e.g., `custom.gemini.com:8080`), or domain with path prefix (e.g., `custom.gemini.com/api/v1`). When not configured, uses the default domain `generativelanguage.googleapis.com`. |
 | `geminiSafetySetting` | map of string   | Optional             | -             | Gemini AI content filtering and safety level settings. Refer to [Safety settings](https://ai.google.dev/gemini-api/docs/safety-settings). |
-| `apiVersion` | string | 非必填 | `v1beta` | To specify the version of the API, you can choose either 'v1' or 'v1beta'. Version differences refer to https://ai.google.dev/gemini-api/docs/api-versions |
-| `geminiThinkingBudget` | number | 非必填 | - | The parameters of the gemini2.5 series: 0 indicates no thinking mode, -1 represents dynamic adjustment. For specific parameter references, please refer to the official website |
+| `apiVersion` | string | Optional | `v1beta` | To specify the version of the API, you can choose either 'v1' or 'v1beta'. Version differences refer to https://ai.google.dev/gemini-api/docs/api-versions |
+| `geminiThinkingBudget` | number | Optional | - | The parameters of the gemini2.5 series: 0 indicates no thinking mode, -1 represents dynamic adjustment. For specific parameter references, please refer to the official website |
 
 ### DeepL
 
@@ -1655,6 +1656,28 @@ provider:
     "HARM_CATEGORY_HARASSMENT" :"BLOCK_NONE"
     "HARM_CATEGORY_DANGEROUS_CONTENT" :"BLOCK_NONE"
 ```
+
+**Configuration Example with Custom URL**
+
+If you need to access Gemini API through a proxy or mirror service, you can configure `geminiCustomUrl`:
+
+```yaml
+provider:
+  type: gemini
+  apiTokens:
+    - "YOUR_GEMINI_API_TOKEN"
+  # Domain only configuration
+  geminiCustomUrl: "custom.gemini.com"
+  # Or configuration with path prefix
+  # geminiCustomUrl: "https://proxy.example.com/gemini/api"
+  modelMapping:
+    "*": "gemini-pro"
+```
+
+Configuration options:
+- Domain only: `custom.gemini.com` - Replaces domain only, keeps original path
+- Domain with port: `custom.gemini.com:8080` - Replaces domain and port
+- Domain with path prefix: `custom.gemini.com/api/v1` - Replaces domain and adds path prefix
 
 **Request Example**
 
