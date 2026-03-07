@@ -1,0 +1,34 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-header-modifier
+  namespace: higress-system
+spec:
+  defaultConfig:
+    # ========================================
+    # Minimal Configuration Example
+    # ========================================
+    # This is a minimal configuration for MSE metadata injection
+
+    # Static headers - add fixed values
+    staticHeaders:
+      - key: "x-mse-gateway-instance-id"
+        value: "gateway-001"
+
+    # Fixed source headers - copy from Envoy properties
+    fixedSourceHeaders:
+      - source: "authority"
+        target: "x-mse-domain-name"
+      - source: "route_name"
+        target: "x-mse-router-name"
+      - source: "cluster_name"
+        target: "x-mse-service-name"
+
+    # Priority source headers - extract API key
+    prioritySourceHeaders:
+      - target: "x-mse-consumer-apikey"
+        sources:
+          - "authorization"
+          - "x-api-key"
+          - "api-key"
+        stripPrefix: "Bearer "

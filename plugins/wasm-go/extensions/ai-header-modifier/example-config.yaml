@@ -1,0 +1,149 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-header-modifier
+  namespace: higress-system
+spec:
+  defaultConfig:
+    # ========================================
+    # AI Model Extraction Configuration
+    # ========================================
+    # Extract model and provider information from LLM request bodies
+
+    # Model field name in request body (default: "model")
+    modelKey: "model"
+
+    # Target header for model value
+    modelToHeader: "x-higress-llm-model"
+
+    # Target header for provider value (extracted from "provider/model" format)
+    addProviderHeader: "x-higress-llm-provider"
+
+    # Path suffixes to enable AI model extraction (default: common LLM API paths)
+    enableOnPathSuffix:
+      - "/v1/chat/completions"
+      - "/v1/embeddings"
+      - "/v1/images/generations"
+      - "/v1/audio/speech"
+      - "/completions"
+      - "/embeddings"
+      - "/messages"
+
+    # ========================================
+    # Static Headers Configuration
+    # ========================================
+    # Add headers with fixed values
+
+    staticHeaders:
+      # Gateway instance identification
+      - key: "x-mse-gateway-instance-id"
+        value: "gateway-001"
+
+      # Environment tagging
+      - key: "x-environment"
+        value: "production"
+
+      # Region identification
+      - key: "x-region"
+        value: "cn-hangzhou"
+
+    # ========================================
+    # Fixed Source Headers Configuration
+    # ========================================
+    # Map headers from fixed sources (Envoy properties or pseudo-headers)
+
+    fixedSourceHeaders:
+      # Copy :authority pseudo-header to custom header
+      - source: "authority"
+        target: "x-mse-domain-name"
+
+      # Add Envoy route name for observability
+      - source: "route_name"
+        target: "x-mse-router-name"
+
+      # Add Envoy cluster/service name for billing
+      - source: "cluster_name"
+        target: "x-mse-service-name"
+
+      # Add authenticated consumer name (if available)
+      - source: "consumer_name"
+        target: "x-mse-consumer-name"
+
+    # ========================================
+    # Priority Source Headers Configuration
+    # ========================================
+    # Extract headers from multiple candidate sources with priority fallback
+
+    prioritySourceHeaders:
+      # Extract API key from various header formats
+      - target: "x-mse-consumer-apikey"
+        sources:
+          - "authorization"      # Priority 1: Authorization header
+          - "x-api-key"         # Priority 2: x-api-key header
+          - "api-key"           # Priority 3: api-key header
+          - "apikey"            # Priority 4: apikey header
+        stripPrefix: "Bearer "  # Remove "Bearer " prefix from Authorization header
+
+      # Extract user ID from various header formats
+      - target: "x-user-id"
+        sources:
+          - "x-user-id"
+          - "user-id"
+          - "uid"
+
+  # ========================================
+  # Route-Level Configuration (Optional)
+  # ========================================
+  # Override configuration for specific routes
+
+  matchRules:
+    # Example: Different configuration for specific domain
+    - ingress:
+        - "api.example.com"
+      config:
+        # AI configuration for this route
+        modelKey: "model"
+        modelToHeader: "x-model"
+        addProviderHeader: "x-provider"
+        enableOnPathSuffix:
+          - "/v1/chat/completions"
+
+        # Custom headers for this route
+        staticHeaders:
+          - key: "x-mse-gateway-instance-id"
+            value: "gateway-api-001"
+
+        fixedSourceHeaders:
+          - source: "authority"
+            target: "x-mse-domain-name"
+          - source: "route_name"
+            target: "x-mse-router-name"
+
+        prioritySourceHeaders:
+          - target: "x-mse-consumer-apikey"
+            sources: ["authorization", "x-api-key"]
+            stripPrefix: "Bearer "
+
+    # Example: AI-only configuration for LLM service
+    - ingress:
+        - "llm.example.com"
+      config:
+        modelKey: "model"
+        modelToHeader: "x-model"
+        addProviderHeader: "x-provider"
+        enableOnPathSuffix:
+          - "*"  # Enable for all paths
+
+    # Example: MSE metadata only (no AI extraction)
+    - ingress:
+        - "internal.example.com"
+      config:
+        staticHeaders:
+          - key: "x-mse-gateway-instance-id"
+            value: "gateway-internal-001"
+
+        fixedSourceHeaders:
+          - source: "authority"
+            target: "x-mse-domain-name"
+          - source: "cluster_name"
+            target: "x-mse-service-name"

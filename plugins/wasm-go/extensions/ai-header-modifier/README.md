@@ -1,0 +1,521 @@
+# 功能说明
+
+`ai-header-modifier` 插件从 LLM 请求体中提取模型信息并添加到请求头中,用于路由和流量管理。该插件支持从 JSON 和 multipart/form-data 格式的请求体中提取模型名称,并可选地提取提供商信��。
+
+## 功能特性
+
+- **模型提取**: 从请求体中提取模型名称并添加到指定的请求头
+- **提供商提取**: 支持从 `provider/model` 格式的模型名称中提取提供商信息
+- **请求体重写**: 提取提供商后,自动重写请求体,将模型名称从 `provider/model` 改为 `model`
+- **多格式支持**: 支持 JSON 和 multipart/form-data 两种请求体格式
+- **路径过滤**: 仅对指定路径后缀的请求进行处理
+- **通配符支持**: 支持使用 `*` 通配符匹配所有路径
+
+## 使用场景
+
+### 场景 1: 基于模型的路由
+
+在 AI 网关中,不同的模型可能需要路由到不同的后端服务。通过将模型信息添加到请求头,可以使用 Higress 的路由规则进行灵活的流量分发。
+
+```yaml
+modelKey: model
+modelToHeader: x-higress-llm-model
+enableOnPathSuffix:
+  - /v1/chat/completions
+  - /v1/embeddings
+```
+
+### 场景 2: 多提供商路由
+
+当使用统一的 API 格式支持多个 LLM 提供商时,可以通过提取提供商信息实现基于提供商的路由。
+
+```yaml
+modelKey: model
+modelToHeader: x-higress-llm-model
+addProviderHeader: x-higress-llm-provider
+defaultProvider: default  # 当模型不包含 "/" 时使用的默认提供商
+enableOnPathSuffix:
+  - /v1/chat/completions
+```
+
+请求示例 1 (包含提供商):
+```json
+{
+  "model": "openai/gpt-4",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+处理后:
+- 添加请求头: `x-higress-llm-model: gpt-4`
+- 添加请求头: `x-higress-llm-provider: openai`
+- 请求体中的 model 字段被重写为: `"model": "gpt-4"`
+
+请求示例 2 (不包含提供商):
+```json
+{
+  "model": "gpt-4o-mini",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+处理后:
+- 添加请求头: `x-higress-llm-model: gpt-4o-mini`
+- 添加请求头: `x-higress-llm-provider: default`
+- 请求体保持不变
+
+### 场景 3: 全路径处理
+
+使用通配符 `*` 对所有请求进行处理:
+
+```yaml
+modelKey: model
+modelToHeader: x-model
+enableOnPathSuffix:
+  - "*"
+```
+
+## 配置字段
+
+| 名称 | 数据类型 | 填写要求 | 默认值 | 描述 |
+|------|---------|---------|--------|------|
+| modelKey | string | 选填 | "model" | 请求体中模型字段的键名 |
+| modelToHeader | string | 选填(至少配置一个) | - | 将模型值添加到此请求头 |
+| addProviderHeader | string | 选填(至少配置一个) | - | 将提取的提供商信息添加到此请求头 |
+| defaultProvider | string | 选填 | "default" | 当模型名称不包含 "/" 时使用的默认提供商 |
+| enableOnPathSuffix | array of string | 选填 | [默认路径列表] | 启用插件的路径后缀列表,支持通配符 "*" |
+
+**注意**: `modelToHeader` 和 `addProviderHeader` 至少需要配置一个。
+
+### 默认路径列表
+
+如果不配置 `enableOnPathSuffix`,插件将对以下路径后缀的请求进行处理:
+
+- `/completions`
+- `/embeddings`
+- `/images/generations`
+- `/audio/speech`
+- `/fine_tuning/jobs`
+- `/moderations`
+- `/image-synthesis`
+- `/video-synthesis`
+- `/rerank`
+- `/messages`
+
+## 配置示例
+
+### 示例 1: 仅提取模型名称
+
+```yaml
+modelKey: model
+modelToHeader: x-higress-llm-model
+enableOnPathSuffix:
+  - /v1/chat/completions
+  - /v1/embeddings
+```
+
+### 示例 2: 提取模型和提供商
+
+```yaml
+modelKey: model
+modelToHeader: x-higress-llm-model
+addProviderHeader: x-higress-llm-provider
+enableOnPathSuffix:
+  - /v1/chat/completions
+  - /v1/embeddings
+```
+
+### 示例 3: 自定义模型字段名
+
+```yaml
+modelKey: llm_model
+modelToHeader: x-model
+enableOnPathSuffix:
+  - "*"
+```
+
+### 示例 4: 仅提取提供商
+
+```yaml
+modelKey: model
+addProviderHeader: x-provider
+enableOnPathSuffix:
+  - /v1/chat/completions
+```
+
+## 处理流程
+
+1. **请求头处理阶段**:
+   - 检查请求是否有请求体
+   - 验证请求路径是否匹配配置的后缀
+   - 检测 Content-Type (JSON 或 multipart/form-data)
+   - 缓冲请求体以便后续处理
+
+2. **请求体处理阶段**:
+   - 根据 Content-Type 选择相应的处理方式
+   - 从请求体中提取模型值
+   - 添加配置的请求头
+   - 如果配置了 `addProviderHeader` 且模型值包含 `/`,则提取提供商并重写请求体
+
+## 注意事项
+
+1. **性能考虑**: 插件需要缓冲完整的请求体,对于大型请求可能会增加内存使用
+2. **错误处理**: 如果处理过程中出现错误(如无效的 JSON),插件会记录警告并继续,不会阻塞请求
+3. **提供商格式**: 提供商提取仅在模型值包含 `/` 时生效,格式为 `provider/model`
+4. **多个斜杠**: 如果模型值包含多个 `/` (如 `provider/namespace/model`),仅第一个 `/` 前的部分被视为提供商
+5. **查询参数**: 路径匹配会自动忽略查询参数
+
+## 兼容性
+
+- 支持 JSON 格式的请求体 (Content-Type: application/json)
+- 支持 multipart/form-data 格式的请求体
+- 兼容所有主流 LLM API 格式 (OpenAI, Anthropic, Google, 等)
+
+## 自定义 Header 管理功能
+
+除了 AI 模型提取功能外，插件还支持灵活的自定义 header 管理，适用于 MSE（微服务引擎）元数据注入等场景。
+
+### 功能类型
+
+#### 1. 静态 Header (Static Headers)
+
+添加配置的固定值 header，适用于网关实例标识、环境标签等场景。
+
+```yaml
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+  - key: "x-environment"
+    value: "production"
+```
+
+#### 2. 固定源映射 (Fixed Source Headers)
+
+从固定来源（Envoy 属性或 pseudo-headers）读取值并写入目标 header。
+
+```yaml
+fixedSourceHeaders:
+  - source: "authority"          # 来源：:authority pseudo-header
+    target: "x-mse-domain-name"  # 目标 header
+  - source: "route_name"         # 来源：Envoy 路由名称
+    target: "x-mse-router-name"
+  - source: "cluster_name"       # 来源：Envoy 集群名称
+    target: "x-mse-service-name"
+  - source: "consumer_name"      # 来源：认证的消费者名称
+    target: "x-mse-consumer-name"
+```
+
+**支持的来源：**
+- `authority` - `:authority` pseudo-header（域名，自动去除端口部分）
+- `route_name` - Envoy 路由名称
+- `cluster_name` - Envoy 集群/服务名称
+- `consumer_name` - 认证的消费者名称
+
+**注意：** 当使用 `authority` 作为来源时，插件会自动去除端口部分。例如：
+- `isadba.com:8080` → `isadba.com`
+- `192.168.1.1:8080` → `192.168.1.1`
+- `example.com` → `example.com`（无端口时保持不变）
+
+#### 3. 优先级源列表 (Priority Source Headers)
+
+从多个候选 header 中提取值（按优先级顺序），适用于 API key 提取等场景。
+
+```yaml
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources:
+      - "authorization"      # 优先级 1
+      - "x-api-key"         # 优先级 2
+      - "api-key"           # 优先级 3
+    stripPrefix: "Bearer "  # 可选：去除前缀
+```
+
+**特性：**
+- 按优先级顺序尝试每个源 header
+- 使用第一个找到的非空值
+- 支持前缀去除（如从 Authorization header 中去除 "Bearer "）
+
+### 使用场景
+
+#### 场景 3: MSE 元数据注入
+
+为所有请求添加 MSE 相关的元数据 header，用于可观测性、计费、路由等。
+
+```yaml
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+
+fixedSourceHeaders:
+  - source: "authority"
+    target: "x-mse-domain-name"
+  - source: "route_name"
+    target: "x-mse-router-name"
+  - source: "cluster_name"
+    target: "x-mse-service-name"
+
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization", "x-api-key"]
+    stripPrefix: "Bearer "
+```
+
+#### 场景 4: AI + MSE 混合使用
+
+同时使用 AI 模型提取和 MSE 元数据注入功能。
+
+```yaml
+# AI 配置
+modelKey: "model"
+modelToHeader: "x-higress-llm-model"
+addProviderHeader: "x-higress-llm-provider"
+enableOnPathSuffix:
+  - "/v1/chat/completions"
+
+# MSE 配置
+staticHeaders:
+  - key: "x-mse-gateway-instance-id"
+    value: "gateway-001"
+
+fixedSourceHeaders:
+  - source: "authority"
+    target: "x-mse-domain-name"
+  - source: "route_name"
+    target: "x-mse-router-name"
+
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization", "x-api-key"]
+    stripPrefix: "Bearer "
+```
+
+**行为说明：**
+- MSE headers 对所有请求生效（不受 `enableOnPathSuffix` 限制）
+- AI 模型提取仅对匹配路径的请求生效
+- LLM 请求：同时添加 AI headers 和 MSE headers
+- 非 LLM 请求：仅添加 MSE headers
+
+### 配置示例文件
+
+插件目录提供了多个配置示例文件：
+
+- `example-config.yaml` - 完整配置示例（包含所有功能和注释）
+- `example-config-minimal.yaml` - 最小化配置示例（仅 MSE 功能）
+- `example-config-combined.yaml` - AI + MSE 混合配置示例
+- `CONFIGURATION_EXAMPLES.md` - 详细的配置说明文档
+
+### API Key 提取示例
+
+#### 示例 1: 从 Authorization Bearer Token 提取
+
+**请求：**
+```
+Authorization: Bearer sk-1234567890abcdef
+```
+
+**配置：**
+```yaml
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization"]
+    stripPrefix: "Bearer "
+```
+
+**结果：**
+```
+x-mse-consumer-apikey: sk-1234567890abcdef
+```
+
+#### 示例 2: 多个候选 header
+
+**请求：**
+```
+x-api-key: sk-xyz789
+```
+
+**配置：**
+```yaml
+prioritySourceHeaders:
+  - target: "x-mse-consumer-apikey"
+    sources: ["authorization", "x-api-key", "api-key"]
+```
+
+**结果：**
+```
+x-mse-consumer-apikey: sk-xyz789
+```
+
+#### 示例 3: 优先级选择
+
+**请求：**
+```
+authorization: sk-priority1
+x-api-key: sk-priority2
+```
+
+**结果：** 使用 `sk-priority1`（优先级 1）
+
+
+
+## Google Gemini 原生协议支持
+
+插件自动检测并处理 Google Gemini 原生 API 协议请求。Gemini 协议使用独特的 URL 格式，其中模型名称和 API 密钥通过 URL 路径和查询参数传递。
+
+### Gemini 协议特性
+
+- **自动检测**: 插件自动识别以 `/v1/models/` 开头的路径为 Gemini 协议
+- **URL 解析**: 从 URL 路径提取模型名称，从查询参数提取 API 密钥和提供商
+- **请求头设置**: 自动设置 `x-higress-llm-model`、`x-mse-consumer-apikey`、`x-api-key` 和 `x-request-llm-provider` 请求头
+- **请求体增强**: 自动向请求体添加 `model` 属性（如果不存在）
+
+### Gemini URL 格式
+
+```
+/v1/models/{model-name}:{operation}?key={api-key}&provider={provider}
+```
+
+**组成部分：**
+- **路径前缀**: `/v1/models/` - 用于识别 Gemini 协议
+- **模型名称**: `{model-name}` - 模型标识符（例如 `gemini-3.1-pro-preview`）
+- **操作**: `:{operation}` - API 操作（例如 `:generateContent`）
+- **查询参数**:
+  - `key`: API 密钥（必需）
+  - `provider`: 提供商标识符（可选，默认使用 `defaultProvider` 配置）
+
+### 使用示例
+
+#### 示例 1: 基本 Gemini 请求
+
+**请求：**
+```bash
+curl -X POST "https://api.example.com/v1/models/gemini-3.1-pro-preview:generateContent?key=ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          { "text": "who are you." }
+        ]
+      }
+    ]
+  }'
+```
+
+**插件处理：**
+1. 检测到 Gemini 协议（路径以 `/v1/models/` 开头）
+2. 提取模型名称：`gemini-3.1-pro-preview`
+3. 提取 API 密钥：`ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
+4. 设置请求头：
+   - `x-higress-llm-model: gemini-3.1-pro-preview`
+   - `x-mse-consumer-apikey: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
+   - `x-api-key: ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`（如果原请求头不存在或为空）
+   - `Authorization: Bearer ak_ezE3snddlIygrxxxxBuaNEtfsd2Ys`
+   - `x-request-llm-provider: default`（使用默认提供商）
+5. 向请求体添加 `model` 属性：`"model": "gemini-3.1-pro-preview"`
+
+#### 示例 2: 带提供商参数的 Gemini 请求
+
+**请求：**
+```bash
+curl -X POST "https://api.example.com/v1/models/gemini-pro:generateContent?key=sk-abc123&provider=gemini" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          { "text": "Hello" }
+        ]
+      }
+    ]
+  }'
+```
+
+**插件处理：**
+1. 提取模型名称：`gemini-pro`
+2. 提取 API 密钥：`sk-abc123`
+3. 提取提供商：`gemini`（从查询参数）
+4. 设置请求头：
+   - `x-higress-llm-model: gemini-pro`
+   - `x-mse-consumer-apikey: sk-abc123`
+   - `x-api-key: sk-abc123`（如果原请求头不存在或为空）
+   - `Authorization: Bearer sk-abc123`
+   - `x-request-llm-provider: gemini`
+5. 向请求体添加 `model` 属性：`"model": "gemini/gemini-pro"`
+
+### Gemini 协议配置
+
+Gemini 协议处理使用与标准 AI 功能相同的配置参数：
+
+```yaml
+modelToHeader: x-higress-llm-model
+addProviderHeader: x-request-llm-provider
+defaultProvider: default
+```
+
+**注意事项：**
+1. Gemini 协议请求不受 `enableOnPathSuffix` 限制，自动处理所有以 `/v1/models/` 开头的路径
+2. 如果请求头中已存在 `x-api-key` 且有值，插件不会覆盖它
+3. API 密钥同时设置到 `x-mse-consumer-apikey`、`x-api-key`（如果后者不存在或为空）和 `Authorization`（Bearer token 格式）
+4. 如果请求体已包含 `model` 属性，插件不会修改它
+5. 提供商参数是可选的，如果不提供则使用 `defaultProvider` 配置值
+
+### 请求头映射
+
+| 源 | 目标请求头 | 说明 |
+|---|---|---|
+| URL 路径中的模型名称 | `x-higress-llm-model` | 从路径提取的模型名称 |
+| 查询参数 `key` | `x-mse-consumer-apikey` | API 密钥（用于消费者识别） |
+| 查询参数 `key` | `x-api-key` | API 密钥（仅当 x-api-key 不存在或为空时设置） |
+| 查询参数 `key` | `Authorization` | Bearer token 格式的 API 密钥（`Bearer {api-key}`） |
+| 查询参数 `provider` 或配置的默认值 | `x-request-llm-provider` | 提供商标识符 |
+
+### 请求体增强
+
+对于 Gemini 协议请求，如果请求体不包含 `model` 属性，插件将自动添加：
+
+**添加规则：**
+- 如果 `provider == "default"`: `model = "{model-name}"`
+- 如果 `provider != "default"`: `model = "{provider}/{model-name}"`
+
+**示例：**
+
+原始请求体：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ]
+}
+```
+
+修改后（provider = "gemini"）：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ],
+  "model": "gemini/gemini-3.1-pro-preview"
+}
+```
+
+修改后（provider = "default"）：
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {"text": "Hello"}
+      ]
+    }
+  ],
+  "model": "gemini-3.1-pro-preview"
+}
+```

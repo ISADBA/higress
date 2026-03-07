@@ -1,0 +1,43 @@
+apiVersion: networking.higress.io/v1
+kind: McpBridge
+metadata:
+  name: default
+  namespace: higress-system
+spec:
+  proxies: []
+  registries:
+  - domain: ai.liaobots.work
+    name: llm-liaobot-openai.internal
+    port: 443
+    protocol: https
+    proxyName: ""
+    type: dns
+  - domain: ai.liaobots.work
+    name: llm-liaobot-claude.internal
+    port: 443
+    protocol: https
+    proxyName: ""
+    type: dns
+  - domain: dashscope.aliyuncs.com
+    name: llm-qwen.internal
+    port: 443
+    protocol: https
+    proxyName: ""
+    type: dns
+  - domain: ark.cn-beijing.volces.com
+    name: llm-doubao.internal
+    port: 443
+    protocol: https
+    proxyName: ""
+    type: dns
+  - domain: api.openai.com
+    name: llm-test-openai.internal
+    port: 443
+    protocol: https
+    type: dns
+  - domain: billing-service.higress-system.svc.cluster.local
+    name: billing-service.internal
+    port: 8888
+    protocol: http
+    proxyName: ""
+    type: dns

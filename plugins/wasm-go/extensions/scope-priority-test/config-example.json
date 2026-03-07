@@ -1,0 +1,48 @@
+{
+  "_plugin_id_": "scope-priority-test",
+  "scopeType": "GLOBAL",
+  "message": "This is global config",
+  "priority": 1,
+  "enableRequestHeaders": true,
+  "enableResponseHeaders": true,
+  "enableRequestBody": true,
+  "enableResponseBody": true,
+  "_rules_": [
+    {
+      "consumer": ["premium-user"],
+      "_match_consumer_": ["premium-user"],
+      "config": {
+        "scopeType": "CONSUMER",
+        "message": "This is consumer-level config for premium-user",
+        "priority": 100
+      }
+    },
+    {
+      "ingress": ["test-route"],
+      "_match_route_": ["test-route"],
+      "config": {
+        "scopeType": "ROUTE",
+        "message": "This is route-level config for test-route",
+        "priority": 80
+      }
+    },
+    {
+      "domain": ["example.com"],
+      "_match_domain_": ["example.com"],
+      "config": {
+        "scopeType": "DOMAIN",
+        "message": "This is domain-level config for example.com",
+        "priority": 60
+      }
+    },
+    {
+      "service": ["test-service.default.svc.cluster.local"],
+      "_match_service_": ["test-service"],
+      "config": {
+        "scopeType": "SERVICE",
+        "message": "This is service-level config",
+        "priority": 70
+      }
+    }
+  ]
+}

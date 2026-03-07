@@ -1,0 +1,53 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: scope-priority-test-consumer-vs-route
+  namespace: higress-system
+spec:
+  # 测试场景 5: CONSUMER vs ROUTE 优先级对比
+  # 预期结果:
+  #   - 同时匹配 consumer=premium-user 和 route=test-route 的请求 -> 使用 CONSUMER 配置
+  #   - 只匹配 route=test-route 的请求 -> 使用 ROUTE 配置
+  #   - 其他请求 -> 使用 GLOBAL 配置
+  
+  defaultConfig:
+    scopeType: GLOBAL
+    message: "[TEST-05] Global config - fallback"
+    priority: 1
+    enableRequestHeaders: false
+    enableResponseHeaders: false
+    enableRequestBody: false
+    enableResponseBody: false
+  
+  defaultConfigDisable: false
+  
+  matchRules:
+    # CONSUMER 配置 (应该优先于 ROUTE)
+    - config:
+        scopeType: CONSUMER
+        message: "[TEST-05] Consumer config - should WIN over route when both match"
+        priority: 100
+        enableRequestHeaders: true
+        enableResponseHeaders: true
+        enableRequestBody: true
+        enableResponseBody: true
+      configDisable: false
+      consumer:
+        - premium-user
+    
+    # ROUTE 配置 (优先级低于 CONSUMER)
+    - config:
+        scopeType: ROUTE
+        message: "[TEST-05] Route config - should be used only when consumer doesn't match"
+        priority: 80
+        enableRequestHeaders: true
+        enableResponseHeaders: false
+        enableRequestBody: false
+        enableResponseBody: false
+      configDisable: false
+      ingress:
+        - test-route
+  
+  phase: UNSPECIFIED_PHASE
+  priority: 0
+  url: oci://your-registry/scope-priority-test:1.0.0
