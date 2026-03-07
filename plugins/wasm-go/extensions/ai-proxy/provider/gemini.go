@@ -116,6 +116,33 @@ func (g *geminiProvider) GetProviderType() string {
 
 func (g *geminiProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
 	g.config.handleRequestHeaders(g, ctx, apiName)
+
+	// 如果是原生协议，需要处理 URL 中的 key 参数
+	// 将客户端传来的 key 替换为 provider 配置的 key
+	if g.config.IsOriginal() {
+		// 获取当前路径
+		path, err := proxywasm.GetHttpRequestHeader(":path")
+		if err == nil && (strings.Contains(path, "?key=") || strings.Contains(path, "&key=")) {
+			// 解析 URL
+			u, err := url.Parse(path)
+			if err == nil {
+				q := u.Query()
+				// 替换 key 参数为 provider 配置的 key
+				q.Set("key", g.config.GetApiTokenInUse(ctx))
+				u.RawQuery = q.Encode()
+				newPath := u.String()
+
+				// 更新路径
+				err = proxywasm.ReplaceHttpRequestHeader(":path", newPath)
+				if err != nil {
+					log.Warnf("failed to replace path with updated key: %v", err)
+				} else {
+					log.Debugf("ai-proxy: gemini provider replaced URL key parameter in path: %s", newPath)
+				}
+			}
+		}
+	}
+
 	// Delay the header processing to allow changing streaming mode in OnRequestBody
 	return nil
 }

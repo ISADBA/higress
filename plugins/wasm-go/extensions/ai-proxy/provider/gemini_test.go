@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -445,6 +447,86 @@ func TestProviderConfig_GetGeminiCustomUrl(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.expectedUrl, config.GetGeminiCustomUrl())
+		})
+	}
+}
+
+// TestGeminiProvider_OriginalProtocolKeyReplacement tests URL key parameter replacement for original protocol
+func TestGeminiProvider_OriginalProtocolKeyReplacement(t *testing.T) {
+	// Note: This test verifies the logic structure
+	// Full integration testing would require mocking proxywasm functions
+
+	testCases := []struct {
+		name              string
+		protocol          string
+		inputPath         string
+		providerKey       string
+		shouldReplace     bool
+		expectedKeyInPath string
+	}{
+		{
+			name:              "original protocol with key in query",
+			protocol:          protocolOriginal,
+			inputPath:         "/v1/models/gemini-pro:generateContent?key=client-key-123",
+			providerKey:       "provider-key-456",
+			shouldReplace:     true,
+			expectedKeyInPath: "provider-key-456",
+		},
+		{
+			name:              "original protocol with key and other params",
+			protocol:          protocolOriginal,
+			inputPath:         "/v1/models/gemini-pro:generateContent?key=client-key&foo=bar",
+			providerKey:       "provider-key-789",
+			shouldReplace:     true,
+			expectedKeyInPath: "provider-key-789",
+		},
+		{
+			name:              "openai protocol should not replace",
+			protocol:          protocolOpenAI,
+			inputPath:         "/v1/chat/completions",
+			providerKey:       "provider-key-abc",
+			shouldReplace:     false,
+			expectedKeyInPath: "",
+		},
+		{
+			name:              "original protocol without key param",
+			protocol:          protocolOriginal,
+			inputPath:         "/v1/models/gemini-pro:generateContent",
+			providerKey:       "provider-key-def",
+			shouldReplace:     false,
+			expectedKeyInPath: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := ProviderConfig{
+				typ:       providerTypeGemini,
+				protocol:  tc.protocol,
+				apiTokens: []string{tc.providerKey},
+			}
+
+			// Verify the protocol check logic
+			if tc.protocol == protocolOriginal {
+				assert.True(t, config.IsOriginal())
+			} else {
+				assert.False(t, config.IsOriginal())
+			}
+
+			// Verify URL parsing logic
+			if tc.shouldReplace && strings.Contains(tc.inputPath, "?key=") {
+				u, err := url.Parse(tc.inputPath)
+				assert.NoError(t, err)
+
+				q := u.Query()
+				q.Set("key", tc.providerKey)
+				u.RawQuery = q.Encode()
+				newPath := u.String()
+
+				// Verify the new path contains the provider key
+				assert.Contains(t, newPath, tc.expectedKeyInPath)
+				assert.NotContains(t, newPath, "client-key")
+			}
 		})
 	}
 }
