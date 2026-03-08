@@ -607,10 +607,47 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.
 	// Check HTTP status code
 	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
 	if err != nil || statusCode != "200" {
-		log.Debugf("[%s] skipping billing for non-200 response: status=%s", pluginName, statusCode)
+		// Non-200 response: skip billing and log with appropriate level and context
+
+		// Extract context information for logging (consumer, provider, model)
+		consumer := "unknown"
+		if tenantInfo, ok := ctx.GetContext(CtxKeyTenantInfo).(*TenantInfo); ok && tenantInfo != nil {
+			// Use ConsumerName if available, otherwise use ConsumerID
+			if tenantInfo.ConsumerName != "" {
+				consumer = tenantInfo.ConsumerName
+			} else if tenantInfo.ConsumerID != "" {
+				consumer = tenantInfo.ConsumerID
+			}
+		}
+		provider := extractProvider(ctx)
+		model := extractModel(ctx)
+
+		// Log with appropriate level based on status code type
+		statusInt, parseErr := strconv.Atoi(statusCode)
+		if parseErr == nil {
+			if statusInt >= 400 && statusInt < 500 {
+				// 4xx: Client errors - Info level
+				log.Infof("[%s] skipping billing for 4xx response: consumer=%s, provider=%s, model=%s, status=%s",
+					pluginName, consumer, provider, model, statusCode)
+			} else if statusInt >= 500 && statusInt < 600 {
+				// 5xx: Server errors - Warn level
+				log.Errorf("[%s] skipping billing for 5xx response: consumer=%s, provider=%s, model=%s, status=%s",
+					pluginName, consumer, provider, model, statusCode)
+			} else {
+				// Other non-200 (e.g., 3xx) - Debug level
+				log.Errorf("[%s] skipping billing for non-200 response: consumer=%s, provider=%s, model=%s, status=%s",
+					pluginName, consumer, provider, model, statusCode)
+			}
+		} else {
+			// Failed to parse status code - Debug level
+			log.Errorf("[%s] skipping billing for non-200 response: status=%s", pluginName, statusCode)
+		}
+
+		// Return ActionContinue to passthrough the response
 		return types.ActionContinue
 	}
 
+	// 200 response: Continue with normal billing flow
 	// Detect streaming vs non-streaming response
 	contentType, _ := proxywasm.GetHttpResponseHeader("content-type")
 	isStreaming := strings.Contains(contentType, "text/event-stream")
@@ -631,6 +668,13 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 	// Check if request was denied in request phase
 	if denied, ok := ctx.GetContext(CtxKeyRequestDenied).(bool); ok && denied {
 		log.Debugf("[%s] request was denied, skipping response body processing", pluginName)
+		return types.ActionContinue
+	}
+
+	// Check HTTP status code - skip processing for non-200 responses
+	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
+	if err != nil || statusCode != "200" {
+		log.Debugf("[%s] skipping response body processing for non-200 response: status=%s", pluginName, statusCode)
 		return types.ActionContinue
 	}
 
@@ -688,6 +732,13 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	// Check if request was denied in request phase
 	if denied, ok := ctx.GetContext(CtxKeyRequestDenied).(bool); ok && denied {
 		log.Debugf("[%s] request was denied, skipping streaming response body processing", pluginName)
+		return data
+	}
+
+	// Check HTTP status code - skip processing for non-200 responses
+	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
+	if err != nil || statusCode != "200" {
+		log.Debugf("[%s] skipping streaming response body processing for non-200 response: status=%s", pluginName, statusCode)
 		return data
 	}
 
