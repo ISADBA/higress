@@ -28,6 +28,7 @@ const (
 	CtxKeyBillingInfo    = "ai-billing-info"
 	CtxKeyIsStreaming    = "ai-billing-is-streaming"
 	CtxKeyRequestDenied  = "ai-billing-request-denied"
+	CtxKeyStatusCode     = "ai-billing-status-code"
 )
 
 func main() {}
@@ -605,8 +606,19 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.
 	log.Debugf("[%s] processing response headers", pluginName)
 
 	// Check HTTP status code
-	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
-	if err != nil || statusCode != "200" {
+	statusCodeStr, err := proxywasm.GetHttpResponseHeader(":status")
+	statusCodeInt := 200 // default to 200
+	if err == nil {
+		// Parse status code string to int
+		if code, parseErr := strconv.Atoi(statusCodeStr); parseErr == nil {
+			statusCodeInt = code
+		}
+	}
+
+	// Store status code in context for use in response body phase
+	ctx.SetContext(CtxKeyStatusCode, statusCodeInt)
+
+	if err != nil || statusCodeStr != "200" {
 		// Non-200 response: skip billing and log with appropriate level and context
 
 		// Extract context information for logging (consumer, provider, model)
@@ -623,24 +635,24 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config BillingConfig) types.
 		model := extractModel(ctx)
 
 		// Log with appropriate level based on status code type
-		statusInt, parseErr := strconv.Atoi(statusCode)
+		statusInt, parseErr := strconv.Atoi(statusCodeStr)
 		if parseErr == nil {
 			if statusInt >= 400 && statusInt < 500 {
 				// 4xx: Client errors - Info level
 				log.Infof("[%s] skipping billing for 4xx response: consumer=%s, provider=%s, model=%s, status=%s",
-					pluginName, consumer, provider, model, statusCode)
+					pluginName, consumer, provider, model, statusCodeStr)
 			} else if statusInt >= 500 && statusInt < 600 {
 				// 5xx: Server errors - Warn level
 				log.Errorf("[%s] skipping billing for 5xx response: consumer=%s, provider=%s, model=%s, status=%s",
-					pluginName, consumer, provider, model, statusCode)
+					pluginName, consumer, provider, model, statusCodeStr)
 			} else {
 				// Other non-200 (e.g., 3xx) - Debug level
 				log.Errorf("[%s] skipping billing for non-200 response: consumer=%s, provider=%s, model=%s, status=%s",
-					pluginName, consumer, provider, model, statusCode)
+					pluginName, consumer, provider, model, statusCodeStr)
 			}
 		} else {
 			// Failed to parse status code - Debug level
-			log.Errorf("[%s] skipping billing for non-200 response: status=%s", pluginName, statusCode)
+			log.Errorf("[%s] skipping billing for non-200 response: status=%s", pluginName, statusCodeStr)
 		}
 
 		// Return ActionContinue to passthrough the response
@@ -671,10 +683,10 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 		return types.ActionContinue
 	}
 
-	// Check HTTP status code - skip processing for non-200 responses
-	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
-	if err != nil || statusCode != "200" {
-		log.Debugf("[%s] skipping response body processing for non-200 response: status=%s", pluginName, statusCode)
+	// Check HTTP status code from context (set in onHttpResponseHeaders)
+	// We cannot reliably get :status header in response body phase
+	if statusCode, ok := ctx.GetContext(CtxKeyStatusCode).(int); ok && statusCode != 200 {
+		log.Debugf("[%s] skipping response body processing for non-200 response: status=%d", pluginName, statusCode)
 		return types.ActionContinue
 	}
 
@@ -735,10 +747,10 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 		return data
 	}
 
-	// Check HTTP status code - skip processing for non-200 responses
-	statusCode, err := proxywasm.GetHttpResponseHeader(":status")
-	if err != nil || statusCode != "200" {
-		log.Debugf("[%s] skipping streaming response body processing for non-200 response: status=%s", pluginName, statusCode)
+	// Check HTTP status code from context (set in onHttpResponseHeaders)
+	// We cannot reliably get :status header in response body phase
+	if statusCode, ok := ctx.GetContext(CtxKeyStatusCode).(int); ok && statusCode != 200 {
+		log.Debugf("[%s] skipping streaming response body processing for non-200 response: status=%d", pluginName, statusCode)
 		return data
 	}
 
