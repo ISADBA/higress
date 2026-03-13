@@ -25,6 +25,7 @@ const (
 	CtxKeyTenantInfo     = "ai-billing-tenant-info"
 	CtxKeyApiKey         = "ai-billing-api-key" // Optional, for debug logging only
 	CtxKeyConsumerApiKey = "ai-billing-consumer-apikey"
+	CtxKeyApikeyID       = "ai-billing-apikey-id"
 	CtxKeyBillingInfo    = "ai-billing-info"
 	CtxKeyIsStreaming    = "ai-billing-is-streaming"
 	CtxKeyRequestDenied  = "ai-billing-request-denied"
@@ -100,6 +101,7 @@ type CostRequest struct {
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	ApiKey       string `json:"apikey"`
+	ApikeyID     string `json:"apikey_id"`
 	// Note: consumer_id, consumer_name, tenant_id are in headers, not body
 }
 
@@ -256,6 +258,16 @@ func extractConsumerApiKey() string {
 	return apiKey
 }
 
+// extractApikeyID extracts the apikey ID from x-mse-apikey-id header
+// Returns empty string if header is not present
+func extractApikeyID() string {
+	apikeyID, err := proxywasm.GetHttpRequestHeader("x-mse-apikey-id")
+	if err != nil || apikeyID == "" {
+		return ""
+	}
+	return apikeyID
+}
+
 // extractTenantInfo extracts tenant information and HMAC authentication headers from the request
 func extractTenantInfo(ctx wrapper.HttpContext) (*TenantInfo, error) {
 	tenantInfo := &TenantInfo{}
@@ -363,6 +375,15 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.A
 	consumerApiKey := extractConsumerApiKey()
 	ctx.SetContext(CtxKeyConsumerApiKey, consumerApiKey)
 	log.Debugf("[%s] consumer apikey extracted: %s", pluginName, maskApiKey(consumerApiKey))
+
+	// Extract apikey ID from x-mse-apikey-id header
+	apikeyID := extractApikeyID()
+	ctx.SetContext(CtxKeyApikeyID, apikeyID)
+	if apikeyID == "" {
+		log.Errorf("[%s] apikey ID not found in x-mse-apikey-id header, will use consumer-level quota tracking", pluginName)
+	} else {
+		log.Debugf("[%s] apikey ID extracted: %s", pluginName, apikeyID)
+	}
 
 	// Optional: Extract API key for debug logging
 	apiKey, err := extractApiKey(ctx)
@@ -872,6 +893,12 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 		consumerApiKey = key
 	}
 
+	// Get apikey ID from context
+	apikeyID := ""
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(string); ok {
+		apikeyID = id
+	}
+
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
 		Provider:     billingInfo.Provider,
@@ -880,6 +907,7 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
 		ApiKey:       consumerApiKey,
+		ApikeyID:     apikeyID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
@@ -973,6 +1001,12 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 		consumerApiKey = key
 	}
 
+	// Get apikey ID from context
+	apikeyID := ""
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(string); ok {
+		apikeyID = id
+	}
+
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
 		Provider:     billingInfo.Provider,
@@ -981,6 +1015,7 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 		InputTokens:  billingInfo.InputTokens,
 		OutputTokens: billingInfo.OutputTokens,
 		ApiKey:       consumerApiKey,
+		ApikeyID:     apikeyID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {

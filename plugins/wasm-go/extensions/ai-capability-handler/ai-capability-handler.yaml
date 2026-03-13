@@ -1,0 +1,18 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-capability-handler
+  namespace: higress-system
+spec:
+  defaultConfig:
+    capability_service:
+      url: "http://capability-service.dns/v1/capability/verify-request"
+      timeout_ms: 1000
+      timeout_action: continue  # continue | deny
+    timeout_deny_message:
+      code: 501
+      message: "能力处理超时，请联系管理员"
+  matchRules:
+  - ingress:
+    - default/ai-gateway
+  url: oci://registry.cn-hangzhou.aliyuncs.com/higress/ai-capability-handler:1.0.0
