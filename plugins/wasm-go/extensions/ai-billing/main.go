@@ -101,7 +101,7 @@ type CostRequest struct {
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	ApiKey       string `json:"apikey"`
-	ApikeyID     string `json:"apikey_id"`
+	ApikeyID     int64  `json:"apikey_id"`
 	// Note: consumer_id, consumer_name, tenant_id are in headers, not body
 }
 
@@ -259,12 +259,20 @@ func extractConsumerApiKey() string {
 }
 
 // extractApikeyID extracts the apikey ID from x-mse-apikey-id header
-// Returns empty string if header is not present
-func extractApikeyID() string {
-	apikeyID, err := proxywasm.GetHttpRequestHeader("x-mse-apikey-id")
-	if err != nil || apikeyID == "" {
-		return ""
+// Returns 0 if header is not present or cannot be parsed as integer
+func extractApikeyID() int64 {
+	apikeyIDStr, err := proxywasm.GetHttpRequestHeader("x-mse-apikey-id")
+	if err != nil || apikeyIDStr == "" {
+		return 0
 	}
+
+	// Parse string to int64
+	apikeyID, err := strconv.ParseInt(apikeyIDStr, 10, 64)
+	if err != nil {
+		log.Errorf("[%s] failed to parse apikey ID '%s' as integer: %v", pluginName, apikeyIDStr, err)
+		return 0
+	}
+
 	return apikeyID
 }
 
@@ -379,10 +387,10 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config BillingConfig) types.A
 	// Extract apikey ID from x-mse-apikey-id header
 	apikeyID := extractApikeyID()
 	ctx.SetContext(CtxKeyApikeyID, apikeyID)
-	if apikeyID == "" {
+	if apikeyID == 0 {
 		log.Errorf("[%s] apikey ID not found in x-mse-apikey-id header, will use consumer-level quota tracking", pluginName)
 	} else {
-		log.Debugf("[%s] apikey ID extracted: %s", pluginName, apikeyID)
+		log.Debugf("[%s] apikey ID extracted: %d", pluginName, apikeyID)
 	}
 
 	// Optional: Extract API key for debug logging
@@ -894,8 +902,8 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 	}
 
 	// Get apikey ID from context
-	apikeyID := ""
-	if id, ok := ctx.GetContext(CtxKeyApikeyID).(string); ok {
+	apikeyID := int64(0)
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok {
 		apikeyID = id
 	}
 
@@ -1002,8 +1010,8 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 	}
 
 	// Get apikey ID from context
-	apikeyID := ""
-	if id, ok := ctx.GetContext(CtxKeyApikeyID).(string); ok {
+	apikeyID := int64(0)
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok {
 		apikeyID = id
 	}
 

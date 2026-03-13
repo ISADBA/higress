@@ -1534,7 +1534,7 @@ func TestApikeyIDExtraction(t *testing.T) {
 				{":authority", "example.com"},
 				{":path", "/v1/chat/completions"},
 				{":method", "POST"},
-				{"x-mse-apikey-id", "apikey-12345"}, // ApikeyID header
+				{"x-mse-apikey-id", "12345"}, // ApikeyID header (integer as string)
 			}, validTenantHeaders()...)
 
 			action := host.CallOnHttpRequestHeaders(headers)
