@@ -25,6 +25,7 @@ const (
 const (
 	CtxKeyResponseCheck = "ai-capability-response-check"
 	CtxKeyRequestDenied = "ai-capability-request-denied"
+	CtxKeyRequestInfo   = "ai-capability-request-info"
 )
 
 func main() {}
@@ -275,35 +276,33 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config CapabilityConfig) type
 		return types.ActionContinue
 	}
 
-	// For requests with body, we need to wait for the body phase
-	contentLength, _ := proxywasm.GetHttpRequestHeader("content-length")
-	if contentLength != "" && contentLength != "0" {
-		log.Debugf("[%s] request has body, buffering for body phase", pluginName)
-		ctx.BufferRequestBody()
-		// Store request info in context for body phase
-		ctx.SetContext("request-info", requestInfo)
-		return types.ActionContinue
-	}
+	// Always buffer body and store context to handle all cases consistently
+	// This ensures we process the request in onHttpRequestBody with complete information
+	ctx.BufferRequestBody()
+	ctx.SetContext(CtxKeyRequestInfo, requestInfo)
 
-	// No body, process immediately
-	return processCapabilityRequest(ctx, config, requestInfo)
+	log.Debugf("[%s] buffering request, waiting for body phase", pluginName)
+	return types.ActionContinue
 }
 
 // onHttpRequestBody handles the request body phase
 func onHttpRequestBody(ctx wrapper.HttpContext, config CapabilityConfig, body []byte) types.Action {
-	log.Debugf("[%s] processing request body", pluginName)
+	log.Debugf("[%s] processing request body, size=%d bytes", pluginName, len(body))
 
 	// Get request info from context
-	requestInfo, ok := ctx.GetContext("request-info").(*RequestInfo)
+	requestInfo, ok := ctx.GetContext(CtxKeyRequestInfo).(*RequestInfo)
 	if !ok {
 		log.Errorf("[%s] failed to get request info from context", pluginName)
 		sendErrorResponseAndMarkDenied(ctx, http.StatusInternalServerError, "Internal error")
 		return types.ActionContinue
 	}
 
-	// Add body to request info (base64 encoded)
+	// Add body to request info (base64 encoded) if present
 	if len(body) > 0 {
 		requestInfo.Body = base64.StdEncoding.EncodeToString(body)
+		log.Debugf("[%s] encoded request body: %d bytes", pluginName, len(requestInfo.Body))
+	} else {
+		log.Debugf("[%s] no request body to encode", pluginName)
 	}
 
 	return processCapabilityRequest(ctx, config, requestInfo)
