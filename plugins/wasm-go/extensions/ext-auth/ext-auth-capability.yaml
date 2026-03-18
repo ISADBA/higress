@@ -1,0 +1,66 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  annotations:
+    higress.io/wasm-plugin-description: Sends an authentication request to an external authorization service to check whether the client request is authorized.
+    higress.io/wasm-plugin-icon: https://img.alicdn.com/imgextra/i4/O1CN01BPFGlT1pGZ2VDLgaH_!!6000000005333-2-tps-42-42.png
+    higress.io/wasm-plugin-title: Ext Auth
+  labels:
+    higress.io/resource-definer: higress
+    higress.io/wasm-plugin-built-in: "true"
+    higress.io/wasm-plugin-category: auth
+    higress.io/wasm-plugin-name: ext-auth
+    higress.io/wasm-plugin-version: 1.0.0
+  name: ext-auth-capability
+  namespace: higress-system
+spec:
+  defaultConfigDisable: false
+  failStrategy: FAIL_OPEN
+  imagePullPolicy: IfNotPresent
+  defaultConfig:
+    failure_mode_allow: false
+    failure_mode_allow_header_add: false
+    http_service:
+      authorization_request:
+        allowed_headers:
+          - exact: authorization
+          - exact: x-api-key
+          - exact: x-mse-gateway-instance-id
+          - exact: x-mse-k8s-namespace
+          - exact: x-mse-domain-name
+          - exact: x-mse-router-name
+          - exact: x-mse-service-name
+          - exact: x-forwarded-for
+          - exact: x-real-ip
+          - exact: user-agent
+          - exact: x-request-id
+      authorization_response:
+        allowed_client_headers:
+          - exact: x-error-code
+          - exact: x-error-message
+          - exact: x-rate-limit-remaining
+          - exact: x-rate-limit-reset
+        allowed_upstream_headers:
+          - exact: x-consumer-id
+          - exact: x-mse-consumer-name
+          - exact: x-mse-tenant-id
+          - exact: x-router-resource-id
+          - exact: x-domain-resource-id
+          - exact: x-mse-apikey-id
+          - exact: x-internal-auth-sign-version
+          - exact: x-internal-auth-ts
+          - exact: x-internal-auth-nonce
+          - exact: x-internal-auth-sign
+          - prefix: x-custom-
+      endpoint:
+        path: /auth/apikey/verify
+        service_name: capability-service.internal.dns
+        service_port: 8889
+        request_method: POST
+      endpoint_mode: forward_auth
+      timeout: 3000
+    status_on_error: 503
+    # 不配置 match_list 和 match_type，自动使用默认值（whitelist + 空规则）
+  phase: AUTHN
+  priority: 309
+  url: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ext-auth:2.0.0
