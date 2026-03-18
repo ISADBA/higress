@@ -66,6 +66,11 @@ func (m *genericProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 		util.OverwriteRequestHostHeader(headers, m.config.genericHost)
 	}
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 // applyFirstByteTimeout 在配置了 firstByteTimeout 时，为所有流式请求写入超时头。

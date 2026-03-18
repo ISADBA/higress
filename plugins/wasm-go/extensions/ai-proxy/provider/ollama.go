@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
-	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
 )
 
 // ollamaProvider is the provider for Ollama service.
@@ -71,4 +71,9 @@ func (m *ollamaProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), m.config.capabilities)
 	util.OverwriteRequestHostHeader(headers, m.serviceDomain)
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }

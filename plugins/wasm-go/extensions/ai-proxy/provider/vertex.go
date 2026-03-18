@@ -189,6 +189,11 @@ func (v *vertexProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	}
 
 	util.OverwriteRequestHostHeader(headers, finalVertexDomain)
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (v *vertexProvider) getToken() (cached bool, err error) {

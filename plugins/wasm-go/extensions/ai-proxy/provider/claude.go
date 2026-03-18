@@ -355,6 +355,11 @@ func (c *claudeProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 		// Standard mode: use x-api-key
 		headers.Set("x-api-key", c.config.GetApiTokenInUse(ctx))
 	}
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (c *claudeProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {

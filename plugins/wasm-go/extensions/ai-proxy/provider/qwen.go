@@ -115,6 +115,11 @@ func (m *qwenProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 	if !m.config.IsOriginal() {
 		util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), m.config.capabilities)
 	}
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (m *qwenProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, apiName ApiName, body []byte, headers http.Header) ([]byte, error) {

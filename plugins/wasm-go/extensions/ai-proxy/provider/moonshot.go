@@ -72,6 +72,11 @@ func (m *moonshotProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiN
 	util.OverwriteRequestHostHeader(headers, moonshotDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 // moonshot 有自己获取 context 的配置（moonshotFileId），因此无法复用 handleRequestBody 方法

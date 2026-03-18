@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
-	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
 )
 
 const (
@@ -101,6 +101,11 @@ func (m *cohereProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	util.OverwriteRequestHostHeader(headers, cohereDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (m *cohereProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {

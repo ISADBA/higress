@@ -84,6 +84,11 @@ func (d *difyProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 		util.OverwriteRequestPathHeader(headers, difyWorkflowPath)
 	}
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+d.config.GetApiTokenInUse(ctx))
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (d *difyProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {

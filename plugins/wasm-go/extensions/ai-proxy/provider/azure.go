@@ -236,4 +236,9 @@ func (m *azureProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 		// we should not read the request body and keep it as it is.
 		ctx.DontReadRequestBody()
 	}
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }

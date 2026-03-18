@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
-	"github.com/higress-group/wasm-go/pkg/log"
-	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
 )
 
 // hunyuanProvider is the provider for hunyuan AI service.
@@ -151,6 +151,11 @@ func (m *hunyuanProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 		headers.Set(actionKey, hunyuanChatCompletionTCAction)
 		headers.Set(versionKey, versionValue)
 	}
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 // hunyuan 的 OnRequestBody 逻辑中包含了对 headers 签名的逻辑，并且插入 context 以后还要重新计算签名，因此无法复用 handleRequestBody 方法

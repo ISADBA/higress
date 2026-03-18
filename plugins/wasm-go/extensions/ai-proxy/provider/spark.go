@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
-	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 )
 
 // sparkProvider is the provider for SparkLLM AI service.
@@ -180,4 +180,9 @@ func (p *sparkProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 	util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), p.config.capabilities)
 	util.OverwriteRequestHostHeader(headers, sparkHost)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+p.config.GetApiTokenInUse(ctx))
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }

@@ -67,6 +67,11 @@ func (g *groqProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 	util.OverwriteRequestHostHeader(headers, groqDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+g.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (g *groqProvider) GetApiName(path string) ApiName {

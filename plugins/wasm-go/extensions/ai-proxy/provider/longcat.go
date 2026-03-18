@@ -60,6 +60,11 @@ func (m *longcatProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 	util.OverwriteRequestHostHeader(headers, longcatDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 func (m *longcatProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {

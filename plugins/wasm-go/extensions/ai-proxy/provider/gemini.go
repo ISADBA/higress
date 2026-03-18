@@ -158,6 +158,11 @@ func (g *geminiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	// 设置 API Key 头（保持不变）
 	headers.Set(geminiApiKeyHeader, g.config.GetApiTokenInUse(ctx))
 	util.OverwriteRequestAuthorizationHeader(headers, "")
+
+	// Remove internal headers
+	headers.Del("x-hi-original-auth")
+	headers.Del("x-mse-consumer-apikey")
+	headers.Del("x-mse-tenant-id")
 }
 
 // to support the multimodal for gemini, we can't reuse the config's handleRequestBody
