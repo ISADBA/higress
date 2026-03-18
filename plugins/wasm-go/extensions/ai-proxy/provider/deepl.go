@@ -94,11 +94,6 @@ func (d *deeplProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 	// TODO: Support default host through configuration
 	util.OverwriteRequestHostHeader(headers, deeplHostFree)
 	util.OverwriteRequestAuthorizationHeader(headers, "DeepL-Auth-Key "+d.config.GetApiTokenInUse(ctx))
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (d *deeplProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {

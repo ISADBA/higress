@@ -65,9 +65,4 @@ func (m *ai360Provider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 	util.OverwriteRequestHostHeader(headers, ai360Domain)
 	util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), m.config.capabilities)
 	util.OverwriteRequestAuthorizationHeader(headers, m.config.GetApiTokenInUse(ctx))
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }

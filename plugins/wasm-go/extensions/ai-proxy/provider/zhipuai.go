@@ -81,9 +81,6 @@ func (m *zhipuAiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 	util.OverwriteRequestHostHeader(headers, domain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (m *zhipuAiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {

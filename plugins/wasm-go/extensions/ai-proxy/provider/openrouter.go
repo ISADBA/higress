@@ -69,11 +69,6 @@ func (o *openrouterProvider) TransformRequestHeaders(ctx wrapper.HttpContext, ap
 	util.OverwriteRequestHostHeader(headers, openrouterDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+o.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (o *openrouterProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {

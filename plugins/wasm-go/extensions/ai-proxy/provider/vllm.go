@@ -131,9 +131,6 @@ func (m *vllmProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 
 	// Remove Content-Length header to allow body modification
 	headers.Del("Content-Length")
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (m *vllmProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {

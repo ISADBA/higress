@@ -62,7 +62,4 @@ func (m *yiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName Ap
 	util.OverwriteRequestHostHeader(headers, yiDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }

@@ -51,9 +51,4 @@ func (m *cozeProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 	util.OverwriteRequestHostHeader(headers, cozeDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }

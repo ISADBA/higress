@@ -67,11 +67,6 @@ func (g *baiduProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 	util.OverwriteRequestHostHeader(headers, baiduDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+g.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (g *baiduProvider) GetApiName(path string) ApiName {
