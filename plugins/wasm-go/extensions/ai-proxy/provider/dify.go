@@ -53,7 +53,14 @@ func (d *difyProvider) GetProviderType() string {
 }
 
 func (d *difyProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
+	// 调用原有的处理逻辑（包括 TransformRequestHeaders）
 	d.config.handleRequestHeaders(d, ctx, apiName)
+
+	// 在 handleRequestHeaders 之后删除，确保不会被 saveContextsToHeaders 覆盖
+	_ = proxywasm.RemoveHttpRequestHeader("x-hi-original-auth")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-consumer-apikey")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-tenant-id")
+
 	return nil
 }
 
@@ -84,11 +91,6 @@ func (d *difyProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 		util.OverwriteRequestPathHeader(headers, difyWorkflowPath)
 	}
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+d.config.GetApiTokenInUse(ctx))
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 func (d *difyProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {

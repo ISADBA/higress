@@ -115,7 +115,13 @@ func (g *geminiProvider) GetProviderType() string {
 }
 
 func (g *geminiProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
+	// 调用原有的处理逻辑（包括 TransformRequestHeaders）
 	g.config.handleRequestHeaders(g, ctx, apiName)
+
+	// 在 handleRequestHeaders 之后删除，确保不会被 saveContextsToHeaders 覆盖
+	_ = proxywasm.RemoveHttpRequestHeader("x-hi-original-auth")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-consumer-apikey")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-tenant-id")
 
 	// 如果是原生协议，需要处理 URL 中的 key 参数
 	// 将客户端传来的 key 替换为 provider 配置的 key
@@ -158,11 +164,6 @@ func (g *geminiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	// 设置 API Key 头（保持不变）
 	headers.Set(geminiApiKeyHeader, g.config.GetApiTokenInUse(ctx))
 	util.OverwriteRequestAuthorizationHeader(headers, "")
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 // to support the multimodal for gemini, we can't reuse the config's handleRequestBody

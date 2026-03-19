@@ -43,7 +43,14 @@ func (m *genericProvider) GetProviderType() string {
 
 // OnRequestHeaders 复用通用的 handleRequestHeaders，并在配置首包超时时写入相关头部。
 func (m *genericProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
+	// 调用原有的处理逻辑（包括 TransformRequestHeaders）
 	m.config.handleRequestHeaders(m, ctx, apiName)
+
+	// 在 handleRequestHeaders 之后删除，确保不会被 saveContextsToHeaders 覆盖
+	_ = proxywasm.RemoveHttpRequestHeader("x-hi-original-auth")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-consumer-apikey")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-tenant-id")
+
 	if m.config.firstByteTimeout > 0 {
 		ctx.SetContext(ctxKeyIsStreaming, true)
 		m.applyFirstByteTimeout()
@@ -66,11 +73,6 @@ func (m *genericProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 		util.OverwriteRequestHostHeader(headers, m.config.genericHost)
 	}
 	headers.Del("Content-Length")
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 // applyFirstByteTimeout 在配置了 firstByteTimeout 时，为所有流式请求写入超时头。

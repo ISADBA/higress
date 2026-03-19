@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 )
@@ -49,7 +50,14 @@ func (c *cloudflareProvider) GetProviderType() string {
 }
 
 func (c *cloudflareProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
+	// 调用原有的处理逻辑（包括 TransformRequestHeaders）
 	c.config.handleRequestHeaders(c, ctx, apiName)
+
+	// 在 handleRequestHeaders 之后删除，确保不会被 saveContextsToHeaders 覆盖
+	_ = proxywasm.RemoveHttpRequestHeader("x-hi-original-auth")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-consumer-apikey")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-tenant-id")
+
 	return nil
 }
 
@@ -64,9 +72,4 @@ func (c *cloudflareProvider) TransformRequestHeaders(ctx wrapper.HttpContext, ap
 	util.OverwriteRequestPathHeader(headers, strings.Replace(cloudflareChatCompletionPath, "{account_id}", c.config.cloudflareAccountId, 1))
 	util.OverwriteRequestHostHeader(headers, cloudflareDomain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+c.config.GetApiTokenInUse(ctx))
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }

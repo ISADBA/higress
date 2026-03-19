@@ -134,7 +134,14 @@ func (m *hunyuanProvider) useOpenAICompatibleAPI() bool {
 }
 
 func (m *hunyuanProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
+	// 调用原有的处理逻辑（包括 TransformRequestHeaders）
 	m.config.handleRequestHeaders(m, ctx, apiName)
+
+	// 在 handleRequestHeaders 之后删除，确保不会被 saveContextsToHeaders 覆盖
+	_ = proxywasm.RemoveHttpRequestHeader("x-hi-original-auth")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-consumer-apikey")
+	_ = proxywasm.RemoveHttpRequestHeader("x-mse-tenant-id")
+
 	// Delay the header processing to allow changing streaming mode in OnRequestBody
 	return nil
 }
@@ -151,11 +158,6 @@ func (m *hunyuanProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNa
 		headers.Set(actionKey, hunyuanChatCompletionTCAction)
 		headers.Set(versionKey, versionValue)
 	}
-
-	// Remove internal headers
-	headers.Del("x-hi-original-auth")
-	headers.Del("x-mse-consumer-apikey")
-	headers.Del("x-mse-tenant-id")
 }
 
 // hunyuan 的 OnRequestBody 逻辑中包含了对 headers 签名的逻辑，并且插入 context 以后还要重新计算签名，因此无法复用 handleRequestBody 方法
