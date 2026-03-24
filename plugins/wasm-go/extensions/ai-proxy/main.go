@@ -170,10 +170,12 @@ func saveContextsToHeaders(ctx wrapper.HttpContext) {
 			_ = proxywasm.ReplaceHttpRequestHeader(originalHeader, originalValue)
 		}
 	}
-	originalValue := ctx.GetStringContext(ctxOriginalAuth, "")
-	if originalValue != "" {
-		_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderOriginalAuth, originalValue)
-	}
+	// 不再恢复 x-hi-original-auth 头部，因为需要传递给provider的时候去掉此header
+	// 这避免了 provider 删除后又被 defer 函数重新添加的问题
+	// originalValue := ctx.GetStringContext(ctxOriginalAuth, "")
+	// if originalValue != "" {
+	// 	_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderOriginalAuth, originalValue)
+	// }
 }
 
 func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConfig) types.Action {
