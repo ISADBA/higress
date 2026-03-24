@@ -868,9 +868,15 @@ func extractRequestID(ctx wrapper.HttpContext, data []byte) string {
 }
 
 // extractModel extracts the model name from the x-higress-llm-model request header
+// If the model contains "/", it returns only the part after "/" (the actual model name)
 func extractModel(ctx wrapper.HttpContext) string {
 	// Try to get from x-higress-llm-model header
 	if model, err := proxywasm.GetHttpRequestHeader("x-higress-llm-model"); err == nil && model != "" {
+		// If model contains "/", extract only the part after "/"
+		if strings.Contains(model, "/") {
+			idx := strings.Index(model, "/")
+			return model[idx+1:]
+		}
 		return model
 	}
 

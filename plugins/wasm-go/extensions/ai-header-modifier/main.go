@@ -495,12 +495,11 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AiHeaderModifierConfig, b
 
 	// Check if this is a Gemini protocol request
 	if isGemini, ok := ctx.GetContext("isGemini").(bool); ok && isGemini {
-		// Get model name and provider from headers
+		// Get model name from header (already in complete format)
 		modelName, _ := proxywasm.GetHttpRequestHeader(storedConfig.ModelToHeader)
-		provider, _ := proxywasm.GetHttpRequestHeader(storedConfig.AddProviderHeader)
 
 		if modelName != "" {
-			newBody := addModelToBody(body, modelName, provider, log)
+			newBody := addModelToBodyDirect(body, modelName, log)
 			if len(newBody) > 0 && len(newBody) != len(body) {
 				err := proxywasm.ReplaceHttpRequestBody(newBody)
 				if err != nil {
@@ -569,13 +568,13 @@ func processJSONBody(config AiHeaderModifierConfig, body []byte, log log.Log) {
 		}
 	}
 
-	// Add modelToHeader if configured (use modelName without provider prefix)
+	// Add modelToHeader if configured (preserve original format for all headers)
 	if config.ModelToHeader != "" {
-		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
+		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelStr)
 		if err != nil {
 			log.Warnf("Failed to add model header: %v", err)
 		} else {
-			log.Debugf("Added header %s: %s", config.ModelToHeader, modelName)
+			log.Debugf("Added header %s: %s", config.ModelToHeader, modelStr)
 		}
 	}
 
@@ -658,13 +657,13 @@ func processMultipartBody(config AiHeaderModifierConfig, body []byte, log log.Lo
 		}
 	}
 
-	// Add modelToHeader if configured (use modelName without provider prefix)
+	// Add modelToHeader if configured (preserve original format for all headers)
 	if config.ModelToHeader != "" {
-		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
+		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelValue)
 		if err != nil {
 			log.Warnf("Failed to add model header: %v", err)
 		} else {
-			log.Debugf("Added header %s: %s", config.ModelToHeader, modelName)
+			log.Debugf("Added header %s: %s", config.ModelToHeader, modelValue)
 		}
 	}
 
@@ -816,15 +815,6 @@ func processGeminiProtocol(config AiHeaderModifierConfig, path string, log log.L
 		log.Warn("Failed to extract model name from Gemini protocol path")
 	} else {
 		log.Debugf("Extracted model name: %s", modelName)
-		// Set model header
-		if config.ModelToHeader != "" {
-			err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, modelName)
-			if err != nil {
-				log.Warnf("Failed to set model header: %v", err)
-			} else {
-				log.Debugf("Set header %s=%s", config.ModelToHeader, modelName)
-			}
-		}
 	}
 
 	// Parse query parameters
@@ -882,6 +872,23 @@ func processGeminiProtocol(config AiHeaderModifierConfig, path string, log log.L
 		log.Debugf("Using default provider: %s", provider)
 	}
 
+	// Set model header with complete format (provider/model or just model)
+	if config.ModelToHeader != "" && modelName != "" {
+		var headerValue string
+		if provider != "default" && provider != "" {
+			headerValue = provider + "/" + modelName
+		} else {
+			headerValue = modelName
+		}
+
+		err := proxywasm.ReplaceHttpRequestHeader(config.ModelToHeader, headerValue)
+		if err != nil {
+			log.Warnf("Failed to set model header: %v", err)
+		} else {
+			log.Debugf("Set header %s=%s", config.ModelToHeader, headerValue)
+		}
+	}
+
 	// Set provider header
 	if config.AddProviderHeader != "" {
 		err := proxywasm.ReplaceHttpRequestHeader(config.AddProviderHeader, provider)
@@ -921,5 +928,30 @@ func addModelToBody(body []byte, modelName string, provider string, log log.Log)
 	}
 
 	log.Debugf("Added model property to body: %s", modelValue)
+	return newBody
+}
+
+// addModelToBodyDirect adds model attribute to Gemini request body using the model name directly
+func addModelToBodyDirect(body []byte, modelName string, log log.Log) []byte {
+	// Validate JSON
+	if !gjson.ValidBytes(body) {
+		log.Warn("Invalid JSON body, skipping model addition")
+		return body
+	}
+
+	// Check if model attribute already exists
+	if gjson.GetBytes(body, "model").Exists() {
+		log.Debug("Model property already exists in body, skipping")
+		return body
+	}
+
+	// Add model attribute directly
+	newBody, err := sjson.SetBytes(body, "model", modelName)
+	if err != nil {
+		log.Warnf("Failed to add model property to body: %v", err)
+		return body
+	}
+
+	log.Debugf("Added model property to body: %s", modelName)
 	return newBody
 }

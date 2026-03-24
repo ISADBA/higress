@@ -47,7 +47,7 @@ enableOnPathSuffix:
 ```
 
 处理后:
-- 添加请求头: `x-higress-llm-model: gpt-4`
+- 添加请求头: `x-higress-llm-model: openai/gpt-4`
 - 添加请求头: `x-higress-llm-provider: openai`
 - 请求体中的 model 字段被重写为: `"model": "gpt-4"`
 

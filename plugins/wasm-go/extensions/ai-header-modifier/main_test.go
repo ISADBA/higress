@@ -179,12 +179,53 @@ func TestJSONBodyProcessing(t *testing.T) {
 		// Verify headers were added
 		headers := host.GetRequestHeaders()
 		modelHeader := getHeader(headers, "x-model")
-		require.Equal(t, "gpt-4", modelHeader)
+		require.Equal(t, "openai/gpt-4", modelHeader)
 
 		providerHeader := getHeader(headers, "x-provider")
 		require.Equal(t, "openai", providerHeader)
 
 		// Verify body was rewritten
+		modifiedBody := host.GetRequestBody()
+		require.Contains(t, string(modifiedBody), `"model": "gpt-4"`)
+		require.NotContains(t, string(modifiedBody), "openai/gpt-4")
+	})
+}
+
+func TestJSONBodyProcessingWithFullModelName(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelKey":           "model",
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-higress-llm-provider",
+		"enableOnPathSuffix": []string{"/v1/chat/completions"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		// Test JSON request with provider - should preserve full model name in header
+		requestBody := `{"model": "openai/gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1/chat/completions"},
+			{"content-type", "application/json"},
+			{"content-length", "100"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		// Verify headers were added - model header should preserve full format
+		headers := host.GetRequestHeaders()
+		modelHeader, _ := test.GetHeaderValue(headers, "x-higress-llm-model")
+		require.Equal(t, "openai/gpt-4", modelHeader) // Full format preserved
+
+		providerHeader, _ := test.GetHeaderValue(headers, "x-higress-llm-provider")
+		require.Equal(t, "openai", providerHeader)
+
+		// Verify body was rewritten to contain only model name
 		modifiedBody := host.GetRequestBody()
 		require.Contains(t, string(modifiedBody), `"model": "gpt-4"`)
 		require.NotContains(t, string(modifiedBody), "openai/gpt-4")
@@ -425,7 +466,7 @@ func TestMultipartBodyWithProvider(t *testing.T) {
 
 		// Verify headers were added
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "gpt-4", modelHeader)
+		require.Equal(t, "openai/gpt-4", modelHeader)
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "openai", providerHeader)
@@ -467,9 +508,9 @@ func TestMultipartBodyWithComplexProvider(t *testing.T) {
 		action = host.CallOnHttpRequestBody([]byte(requestBody))
 		require.Equal(t, types.ActionContinue, action)
 
-		// Verify headers - only first slash splits provider
+		// Verify headers - model header should preserve original format
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "openai/gpt-4-turbo", modelHeader)
+		require.Equal(t, "azure/openai/gpt-4-turbo", modelHeader)
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "azure", providerHeader)
@@ -629,7 +670,7 @@ func TestMultipartBodyMultipleParts(t *testing.T) {
 
 		// Verify headers
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-model")
-		require.Equal(t, "gemini-pro", modelHeader)
+		require.Equal(t, "google/gemini-pro", modelHeader) // Now preserves original format
 
 		providerHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-provider")
 		require.Equal(t, "google", providerHeader)
@@ -1323,7 +1364,7 @@ func TestGeminiProtocolWithProvider(t *testing.T) {
 
 		// Verify headers
 		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-higress-llm-model")
-		require.Equal(t, "gemini-pro", modelHeader)
+		require.Equal(t, "gemini/gemini-pro", modelHeader) // Now includes provider when specified
 
 		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
 		require.Equal(t, "sk-abc123", apiKeyHeader)

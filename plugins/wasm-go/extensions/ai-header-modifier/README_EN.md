@@ -47,7 +47,7 @@ Request example 1 (with provider):
 ```
 
 After processing:
-- Added header: `x-higress-llm-model: gpt-4`
+- Added header: `x-higress-llm-model: openai/gpt-4`
 - Added header: `x-higress-llm-provider: openai`
 - Model field in request body rewritten to: `"model": "gpt-4"`
 
