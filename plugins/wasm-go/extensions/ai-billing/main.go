@@ -95,13 +95,18 @@ type BalanceResponse struct {
 
 // CostRequest represents the request to deduct cost
 type CostRequest struct {
-	Provider     string `json:"provider"`
-	ModelName    string `json:"model_name"`
-	RequestID    string `json:"request_id"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	ApiKey       string `json:"apikey"`
-	ApikeyID     int64  `json:"apikey_id"`
+	Provider         string  `json:"provider"`
+	ModelName        string  `json:"model_name"`
+	RequestID        string  `json:"request_id"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64   `json:"cache_write_tokens,omitempty"`
+	SpecialCost      string  `json:"special_cost,omitempty"`
+	ConsumerID       *int64  `json:"consumer_id,omitempty"`
+	ConsumerName     *string `json:"consumer_name,omitempty"`
+	ApiKey           string  `json:"apikey,omitempty"`
+	ApikeyID         *int64  `json:"apikey_id,omitempty"`
 	// Note: consumer_id, consumer_name, tenant_id are in headers, not body
 }
 
@@ -129,11 +134,54 @@ type PricingResponse struct {
 
 // BillingInfo holds the billing information extracted from LLM response
 type BillingInfo struct {
-	InputTokens  int64
-	OutputTokens int64
-	Model        string
-	Provider     string
-	RequestID    string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	Model            string
+	Provider         string
+	RequestID        string
+}
+
+// BillingTokenUsage is the provider-neutral usage view consumed by ai-billing.
+type BillingTokenUsage struct {
+	InputTokens           int64
+	OutputTokens          int64
+	CacheReadTokens       int64
+	CacheWriteTokens      int64
+	RawInputTokenDetails  map[string]int64
+	RawOutputTokenDetails map[string]int64
+}
+
+func buildBillingTokenUsage(usage tokenusage.TokenUsage) BillingTokenUsage {
+	billingUsage := BillingTokenUsage{
+		InputTokens:           usage.InputToken,
+		OutputTokens:          usage.OutputToken,
+		CacheReadTokens:       usage.AnthropicCacheReadInputToken,
+		CacheWriteTokens:      usage.AnthropicCacheCreationInputToken,
+		RawInputTokenDetails:  usage.InputTokenDetails,
+		RawOutputTokenDetails: usage.OutputTokenDetails,
+	}
+
+	// OpenAI chat/completions reports cached_tokens inside prompt_tokens.
+	// To avoid double charging in billing-service's additive formula, move
+	// cached_tokens into CacheReadTokens and subtract it from InputTokens here.
+	if cachedTokens, ok := usage.InputTokenDetails["cached_tokens"]; ok && cachedTokens > 0 {
+		originalInputTokens := billingUsage.InputTokens
+		billingUsage.CacheReadTokens = cachedTokens
+		if cachedTokens <= billingUsage.InputTokens {
+			billingUsage.InputTokens -= cachedTokens
+		} else {
+			billingUsage.InputTokens = 0
+		}
+		log.Debugf("[%s] normalized cached tokens for billing: model=%s originalInputTokens=%d cachedTokens=%d normalizedInputTokens=%d",
+			pluginName, usage.Model, originalInputTokens, cachedTokens, billingUsage.InputTokens)
+	}
+
+	log.Debugf("[%s] build billing token usage: model=%s inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d rawInputTokenDetails=%v rawOutputTokenDetails=%v",
+		pluginName, usage.Model, billingUsage.InputTokens, billingUsage.OutputTokens, billingUsage.CacheReadTokens, billingUsage.CacheWriteTokens, billingUsage.RawInputTokenDetails, billingUsage.RawOutputTokenDetails)
+
+	return billingUsage
 }
 
 // parseConfig parses the plugin configuration
@@ -753,16 +801,20 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config BillingConfig, body []by
 		return types.ActionContinue
 	}
 
-	log.Infof("[%s] extracted billing info: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
-		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, requestID, usage.InputToken, usage.OutputToken, model, provider)
+	billingUsage := buildBillingTokenUsage(usage)
+
+	log.Infof("[%s] extracted billing info: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d model=%s provider=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, requestID, billingUsage.InputTokens, billingUsage.OutputTokens, billingUsage.CacheReadTokens, billingUsage.CacheWriteTokens, model, provider)
 
 	// Deduct cost
 	billingInfo := &BillingInfo{
-		InputTokens:  usage.InputToken,
-		OutputTokens: usage.OutputToken,
-		Model:        model,
-		Provider:     provider,
-		RequestID:    requestID,
+		InputTokens:      billingUsage.InputTokens,
+		OutputTokens:     billingUsage.OutputTokens,
+		CacheReadTokens:  billingUsage.CacheReadTokens,
+		CacheWriteTokens: billingUsage.CacheWriteTokens,
+		Model:            model,
+		Provider:         provider,
+		RequestID:        requestID,
 	}
 
 	return deductCost(ctx, config, tenantInfo, billingInfo)
@@ -786,8 +838,9 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	// Call GetTokenUsage on each chunk
 	usage := tokenusage.GetTokenUsage(ctx, data)
 	if usage.TotalToken > 0 {
-		log.Debugf("[%s] extracted token usage from stream: inputTokens=%d outputTokens=%d",
-			pluginName, usage.InputToken, usage.OutputToken)
+		billingUsage := buildBillingTokenUsage(usage)
+		log.Debugf("[%s] extracted token usage from stream: inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d",
+			pluginName, billingUsage.InputTokens, billingUsage.OutputTokens, billingUsage.CacheReadTokens, billingUsage.CacheWriteTokens)
 
 		// Extract model from request header
 		model := extractModel(ctx)
@@ -798,9 +851,11 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 
 		// Store billing info in context
 		billingInfo := &BillingInfo{
-			InputTokens:  usage.InputToken,
-			OutputTokens: usage.OutputToken,
-			Model:        model,
+			InputTokens:      billingUsage.InputTokens,
+			OutputTokens:     billingUsage.OutputTokens,
+			CacheReadTokens:  billingUsage.CacheReadTokens,
+			CacheWriteTokens: billingUsage.CacheWriteTokens,
+			Model:            model,
 		}
 		ctx.SetContext(CtxKeyBillingInfo, billingInfo)
 	}
@@ -833,8 +888,8 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 		return nil
 	}
 
-	log.Infof("[%s] extracted billing info from stream: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d model=%s provider=%s",
-		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.Model, billingInfo.Provider)
+	log.Infof("[%s] extracted billing info from stream: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d model=%s provider=%s",
+		pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.CacheReadTokens, billingInfo.CacheWriteTokens, billingInfo.Model, billingInfo.Provider)
 
 	// Deduct cost asynchronously - in streaming mode, we don't pause the response
 	// because the stream has already been sent to the client
@@ -908,20 +963,22 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 	}
 
 	// Get apikey ID from context
-	apikeyID := int64(0)
-	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok {
-		apikeyID = id
+	var apikeyID *int64
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok && id > 0 {
+		apikeyID = &id
 	}
 
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
-		Provider:     billingInfo.Provider,
-		ModelName:    billingInfo.Model,
-		RequestID:    billingInfo.RequestID,
-		InputTokens:  billingInfo.InputTokens,
-		OutputTokens: billingInfo.OutputTokens,
-		ApiKey:       consumerApiKey,
-		ApikeyID:     apikeyID,
+		Provider:         billingInfo.Provider,
+		ModelName:        billingInfo.Model,
+		RequestID:        billingInfo.RequestID,
+		InputTokens:      billingInfo.InputTokens,
+		OutputTokens:     billingInfo.OutputTokens,
+		CacheReadTokens:  billingInfo.CacheReadTokens,
+		CacheWriteTokens: billingInfo.CacheWriteTokens,
+		ApiKey:           consumerApiKey,
+		ApikeyID:         apikeyID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
@@ -982,8 +1039,8 @@ func deductCost(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *Tenan
 			return
 		}
 
-		log.Infof("[%s] cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
-			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
+		log.Infof("[%s] cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d cost=%s success=%t",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.CacheReadTokens, billingInfo.CacheWriteTokens, costResp.Cost, costResp.Success)
 
 		// Cost deduction successful, resume response
 		log.Debugf("[%s] cost deduction successful, resuming response", pluginName)
@@ -1016,20 +1073,22 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 	}
 
 	// Get apikey ID from context
-	apikeyID := int64(0)
-	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok {
-		apikeyID = id
+	var apikeyID *int64
+	if id, ok := ctx.GetContext(CtxKeyApikeyID).(int64); ok && id > 0 {
+		apikeyID = &id
 	}
 
 	// Build request body (without consumer_id, consumer_name, tenant_id - those are in headers)
 	requestBody := CostRequest{
-		Provider:     billingInfo.Provider,
-		ModelName:    billingInfo.Model,
-		RequestID:    billingInfo.RequestID,
-		InputTokens:  billingInfo.InputTokens,
-		OutputTokens: billingInfo.OutputTokens,
-		ApiKey:       consumerApiKey,
-		ApikeyID:     apikeyID,
+		Provider:         billingInfo.Provider,
+		ModelName:        billingInfo.Model,
+		RequestID:        billingInfo.RequestID,
+		InputTokens:      billingInfo.InputTokens,
+		OutputTokens:     billingInfo.OutputTokens,
+		CacheReadTokens:  billingInfo.CacheReadTokens,
+		CacheWriteTokens: billingInfo.CacheWriteTokens,
+		ApiKey:           consumerApiKey,
+		ApikeyID:         apikeyID,
 	}
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
@@ -1086,8 +1145,8 @@ func deductCostAsync(ctx wrapper.HttpContext, config BillingConfig, tenantInfo *
 			return
 		}
 
-		log.Infof("[%s] async cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cost=%s success=%t",
-			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, costResp.Cost, costResp.Success)
+		log.Infof("[%s] async cost deduction: tenantId=%s consumerId=%s consumerName=%s requestId=%s inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d cost=%s success=%t",
+			pluginName, tenantInfo.TenantID, tenantInfo.ConsumerID, tenantInfo.ConsumerName, billingInfo.RequestID, billingInfo.InputTokens, billingInfo.OutputTokens, billingInfo.CacheReadTokens, billingInfo.CacheWriteTokens, costResp.Cost, costResp.Success)
 
 		log.Debugf("[%s] async cost deduction successful", pluginName)
 	}, 5000) // 5 second timeout

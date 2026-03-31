@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/proxytest"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
 	"github.com/stretchr/testify/require"
@@ -119,6 +120,14 @@ func validTenantHeaders() [][2]string {
 		{"x-domain-resource-id", "domain-789"},
 		{"x-router-resource-id", "router-012"},
 	}
+}
+
+func latestHttpCallout(t *testing.T, host interface {
+	GetHttpCalloutAttributes() []proxytest.HttpCalloutAttribute
+}) proxytest.HttpCalloutAttribute {
+	httpCallouts := host.GetHttpCalloutAttributes()
+	require.NotEmpty(t, httpCallouts, "Expected at least one HTTP callout")
+	return httpCallouts[len(httpCallouts)-1]
 }
 
 // TestParseConfig 测试配置解析功能
@@ -1071,6 +1080,213 @@ func TestStreamingResponse(t *testing.T) {
 			localResp := host.GetLocalResponse()
 			require.NotNil(t, localResp)
 			require.Equal(t, uint32(500), localResp.StatusCode)
+		})
+	})
+}
+
+func TestCostRequestBodyMapping(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("claude cache usage is forwarded to cost request", func(t *testing.T) {
+			host, status := test.NewTestHost(validDefaultConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			headers := append([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"x-request-llm-provider", "claude"},
+				{"x-higress-llm-model", "claude-3-opus"},
+				{"x-mse-consumer-apikey", "consumer-key-123"},
+				{"x-mse-apikey-id", "789"},
+			}, validTenantHeaders()...)
+
+			action := host.CallOnHttpRequestHeaders(headers)
+			require.Equal(t, types.ActionPause, action)
+
+			// pricing
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"data":{"provider":"claude","model_name":"claude-3-opus"}}`))
+
+			// balance
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"balance":"100.00","uid":12345,"updated_at":1234567890}`))
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			responseBody := `{
+				"id": "msg_test_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [{"type":"text","text":"Test response"}],
+				"model": "claude-3-opus",
+				"usage": {
+					"input_tokens": 150,
+					"output_tokens": 250,
+					"cache_creation_input_tokens": 80,
+					"cache_read_input_tokens": 40
+				}
+			}`
+
+			action = host.CallOnHttpResponseBody([]byte(responseBody))
+			require.Equal(t, types.ActionPause, action)
+
+			callout := latestHttpCallout(t, host)
+			var req CostRequest
+			require.NoError(t, json.Unmarshal(callout.Body, &req))
+			require.Equal(t, "claude", req.Provider)
+			require.Equal(t, "claude-3-opus", req.ModelName)
+			require.EqualValues(t, 150, req.InputTokens)
+			require.EqualValues(t, 250, req.OutputTokens)
+			require.EqualValues(t, 40, req.CacheReadTokens)
+			require.EqualValues(t, 80, req.CacheWriteTokens)
+			require.Equal(t, "consumer-key-123", req.ApiKey)
+			require.NotNil(t, req.ApikeyID)
+			require.EqualValues(t, 789, *req.ApikeyID)
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.08","cost_actual":"0.08","discount_ratio":"1.0","remaining_balance":"99.92"}`))
+		})
+
+		t.Run("cost request omits cache fields when usage has no cache", func(t *testing.T) {
+			host, status := test.NewTestHost(validDefaultConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			headers := append([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-request-llm-provider", "openai"},
+				{"x-higress-llm-model", "gpt-4"},
+			}, validTenantHeaders()...)
+
+			action := host.CallOnHttpRequestHeaders(headers)
+			require.Equal(t, types.ActionPause, action)
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"data":{"provider":"openai","model_name":"gpt-4"}}`))
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"balance":"100.00","uid":12345,"updated_at":1234567890}`))
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			responseBody := `{
+				"id": "chatcmpl-test-123",
+				"model": "gpt-4",
+				"usage": {
+					"prompt_tokens": 100,
+					"completion_tokens": 200,
+					"total_tokens": 300
+				}
+			}`
+
+			action = host.CallOnHttpResponseBody([]byte(responseBody))
+			require.Equal(t, types.ActionPause, action)
+
+			callout := latestHttpCallout(t, host)
+			var bodyMap map[string]any
+			require.NoError(t, json.Unmarshal(callout.Body, &bodyMap))
+			require.EqualValues(t, 100, bodyMap["input_tokens"])
+			require.EqualValues(t, 200, bodyMap["output_tokens"])
+			_, hasCacheRead := bodyMap["cache_read_tokens"]
+			_, hasCacheWrite := bodyMap["cache_write_tokens"]
+			_, hasApikeyID := bodyMap["apikey_id"]
+			require.False(t, hasCacheRead)
+			require.False(t, hasCacheWrite)
+			require.False(t, hasApikeyID)
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.05","cost_actual":"0.05","discount_ratio":"1.0","remaining_balance":"99.95"}`))
+		})
+
+		t.Run("responses api subtracts cached tokens from input tokens", func(t *testing.T) {
+			host, status := test.NewTestHost(validDefaultConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			headers := append([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"x-request-llm-provider", "openai"},
+				{"x-higress-llm-model", "gpt-4.1"},
+			}, validTenantHeaders()...)
+
+			action := host.CallOnHttpRequestHeaders(headers)
+			require.Equal(t, types.ActionPause, action)
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"data":{"provider":"openai","model_name":"gpt-4.1"}}`))
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"balance":"100.00","uid":12345,"updated_at":1234567890}`))
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			responseBody := `{
+				"response": {
+					"id": "resp_123",
+					"model": "gpt-4.1",
+					"usage": {
+						"input_tokens": 100,
+						"output_tokens": 50,
+						"total_tokens": 150,
+						"input_tokens_details": {
+							"cached_tokens": 20
+						}
+					}
+				}
+			}`
+
+			action = host.CallOnHttpResponseBody([]byte(responseBody))
+			require.Equal(t, types.ActionPause, action)
+
+			callout := latestHttpCallout(t, host)
+			var bodyMap map[string]any
+			require.NoError(t, json.Unmarshal(callout.Body, &bodyMap))
+			require.Equal(t, "openai", bodyMap["provider"])
+			require.Equal(t, "gpt-4.1", bodyMap["model_name"])
+			require.Equal(t, "resp_123", bodyMap["request_id"])
+			require.EqualValues(t, 80, bodyMap["input_tokens"])
+			require.EqualValues(t, 50, bodyMap["output_tokens"])
+			require.EqualValues(t, 20, bodyMap["cache_read_tokens"])
+			_, hasCacheWrite := bodyMap["cache_write_tokens"]
+			require.False(t, hasCacheWrite)
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.05","cost_actual":"0.05","discount_ratio":"1.0","remaining_balance":"99.95"}`))
 		})
 	})
 }
