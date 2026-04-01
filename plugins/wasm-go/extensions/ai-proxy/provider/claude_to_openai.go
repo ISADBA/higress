@@ -779,6 +779,13 @@ func (c *ClaudeToOpenAIConverter) buildClaudeStreamResponse(ctx wrapper.HttpCont
 			Usage: &claudeTextGenUsage{
 				InputTokens:  openaiResponse.Usage.PromptTokens,
 				OutputTokens: openaiResponse.Usage.CompletionTokens,
+				CacheReadInputTokens: func() int {
+					if openaiResponse.Usage.PromptTokensDetails != nil {
+						return openaiResponse.Usage.PromptTokensDetails.CachedTokens
+					}
+					return 0
+				}(),
+				CacheCreationInputTokens: openaiResponse.Usage.ClaudeCacheCreation5MTokens,
 			},
 		}
 

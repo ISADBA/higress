@@ -297,15 +297,25 @@ func (c *claudeProviderInitializer) DefaultCapabilities() map[string]string {
 }
 
 func (c *claudeProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
+	customDomain := ""
+	if customUrl := config.GetClaudeCustomUrl(); customUrl != "" {
+		customDomain = strings.TrimPrefix(strings.TrimPrefix(customUrl, "http://"), "https://")
+		if idx := strings.Index(customDomain, "/"); idx != -1 {
+			customDomain = customDomain[:idx]
+		}
+	}
+
 	config.setDefaultCapabilities(c.DefaultCapabilities())
 	return &claudeProvider{
 		config:       config,
+		customDomain: customDomain,
 		contextCache: createContextCache(&config),
 	}, nil
 }
 
 type claudeProvider struct {
 	config       ProviderConfig
+	customDomain string
 	contextCache *contextCache
 
 	messageId   string
@@ -331,7 +341,12 @@ func (c *claudeProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiNa
 
 func (c *claudeProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header) {
 	util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), c.config.capabilities)
-	util.OverwriteRequestHostHeader(headers, claudeDomain)
+
+	if c.customDomain != "" {
+		util.OverwriteRequestHostHeader(headers, c.customDomain)
+	} else {
+		util.OverwriteRequestHostHeader(headers, claudeDomain)
+	}
 
 	if c.config.apiVersion == "" {
 		c.config.apiVersion = claudeDefaultVersion

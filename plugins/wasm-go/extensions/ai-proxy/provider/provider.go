@@ -453,6 +453,9 @@ type ProviderConfig struct {
 	// @Title zh-CN 豆包服务域名
 	// @Description zh-CN 仅适用于豆包服务，默认转发域名为 ark.cn-beijing.volces.com
 	doubaoDomain string `required:"false" yaml:"doubaoDomain" json:"doubaoDomain"`
+	// @Title zh-CN Claude 自定义后端 URL
+	// @Description zh-CN 仅适用于 Claude 服务。自定义的 Claude 服务地址，用于代理或镜像服务
+	claudeCustomUrl string `required:"false" yaml:"claudeCustomUrl" json:"claudeCustomUrl"`
 	// @Title zh-CN Claude Code 模式
 	// @Description zh-CN 仅适用于Claude服务。启用后将伪装成Claude Code客户端发起请求，支持使用Claude Code的OAuth Token进行认证。
 	claudeCodeMode bool `required:"false" yaml:"claudeCodeMode" json:"claudeCodeMode"`
@@ -486,6 +489,10 @@ func (c *ProviderConfig) GetVllmServerHost() string {
 
 func (c *ProviderConfig) GetGeminiCustomUrl() string {
 	return c.geminiCustomUrl
+}
+
+func (c *ProviderConfig) GetClaudeCustomUrl() string {
+	return c.claudeCustomUrl
 }
 
 func (c *ProviderConfig) GetContextCleanupCommands() []string {
@@ -670,6 +677,7 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 	c.vllmServerHost = json.Get("vllmServerHost").String()
 	c.vllmCustomUrl = json.Get("vllmCustomUrl").String()
 	c.geminiCustomUrl = json.Get("geminiCustomUrl").String()
+	c.claudeCustomUrl = json.Get("claudeCustomUrl").String()
 	c.doubaoDomain = json.Get("doubaoDomain").String()
 	c.claudeCodeMode = json.Get("claudeCodeMode").Bool()
 	c.zhipuDomain = json.Get("zhipuDomain").String()
