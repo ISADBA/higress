@@ -403,6 +403,17 @@ func (c *claudeProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName 
 	if apiName != ApiNameChatCompletion {
 		return body, nil
 	}
+
+	// Auto-detect response format: check if it's already OpenAI format
+	var formatCheck map[string]interface{}
+	if err := json.Unmarshal(body, &formatCheck); err == nil {
+		if object, ok := formatCheck["object"].(string); ok && object == "chat.completion" {
+			// Already OpenAI format, return as-is
+			return body, nil
+		}
+	}
+
+	// Claude format, convert to OpenAI
 	claudeResponse := &claudeTextGenResponse{}
 	if err := json.Unmarshal(body, claudeResponse); err != nil {
 		return nil, fmt.Errorf("unable to unmarshal claude response: %v", err)
@@ -430,6 +441,20 @@ func (c *claudeProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, name A
 		if strings.HasPrefix(data, "data:") {
 			// extract json data from the line
 			jsonData := strings.TrimPrefix(data, "data:")
+			jsonData = strings.TrimSpace(jsonData)
+
+			// Auto-detect format: check if it's already OpenAI format
+			var formatCheck map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonData), &formatCheck); err == nil {
+				if object, ok := formatCheck["object"].(string); ok && strings.HasPrefix(object, "chat.completion") {
+					// Already OpenAI format, return as-is
+					responseBuilder.WriteString(data)
+					responseBuilder.WriteString("\n")
+					continue
+				}
+			}
+
+			// Claude format, convert to OpenAI
 			var claudeResponse claudeTextGenStreamResponse
 			if err := json.Unmarshal([]byte(jsonData), &claudeResponse); err != nil {
 				log.Errorf("unable to unmarshal claude response: %v", err)
