@@ -162,11 +162,13 @@ type chatCompletionChoice struct {
 }
 
 type usage struct {
-	PromptTokens            int                      `json:"prompt_tokens,omitempty"`
-	CompletionTokens        int                      `json:"completion_tokens,omitempty"`
-	TotalTokens             int                      `json:"total_tokens,omitempty"`
-	CompletionTokensDetails *completionTokensDetails `json:"completion_tokens_details,omitempty"`
-	PromptTokensDetails     *promptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	PromptTokens                 int                      `json:"prompt_tokens,omitempty"`
+	CompletionTokens             int                      `json:"completion_tokens,omitempty"`
+	TotalTokens                  int                      `json:"total_tokens,omitempty"`
+	CompletionTokensDetails      *completionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptTokensDetails          *promptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	ClaudeCacheCreation5MTokens  int                      `json:"claude_cache_creation_5_m_tokens,omitempty"`
+	ClaudeCacheCreation1HTokens  int                      `json:"claude_cache_creation_1_h_tokens,omitempty"`
 }
 
 type promptTokensDetails struct {
