@@ -52,6 +52,8 @@ type ModelRouterConfig struct {
 	enableAutoRouting bool
 	autoRoutingRules  []AutoRoutingRule
 	defaultModel      string
+	// URI provider extraction
+	providers []string
 }
 
 func parseConfig(json gjson.Result, config *ModelRouterConfig) error {
@@ -112,6 +114,14 @@ func parseConfig(json gjson.Result, config *ModelRouterConfig) error {
 		}
 	}
 
+	// Parse providers configuration
+	providers := json.Get("providers")
+	if providers.Exists() && providers.IsArray() {
+		for _, item := range providers.Array() {
+			config.providers = append(config.providers, item.String())
+		}
+	}
+
 	return nil
 }
 
@@ -121,14 +131,38 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config ModelRouterConfig) typ
 		return types.ActionContinue
 	}
 
+	// Extract provider from URI if configured
+	if len(config.providers) > 0 {
+		// Split path to extract first segment
+		parts := strings.SplitN(path, "/", 3)
+		// parts[0] is empty, parts[1] is potential provider, parts[2] is remaining path
+		if len(parts) >= 3 && parts[1] != "" {
+			candidate := parts[1]
+			// Check if candidate is in providers list
+			for _, provider := range config.providers {
+				if candidate == provider {
+					// Rewrite path: remove provider segment
+					newPath := "/" + parts[2]
+					_ = proxywasm.ReplaceHttpRequestHeader(":path", newPath)
+					// Store provider in context
+					ctx.SetContext("uriProvider", provider)
+					log.Debugf("URI provider extracted: %s, path rewritten: %s -> %s", provider, path, newPath)
+					path = newPath
+					break
+				}
+			}
+		}
+	}
+
 	// Remove query parameters for suffix check
+	pathWithoutQuery := path
 	if idx := strings.Index(path, "?"); idx != -1 {
-		path = path[:idx]
+		pathWithoutQuery = path[:idx]
 	}
 
 	enable := false
 	for _, suffix := range config.enableOnPathSuffix {
-		if suffix == "*" || strings.HasSuffix(path, suffix) {
+		if suffix == "*" || strings.HasSuffix(pathWithoutQuery, suffix) {
 			enable = true
 			break
 		}
@@ -204,6 +238,36 @@ func handleJsonBody(ctx wrapper.HttpContext, config ModelRouterConfig, body []by
 		log.Error("invalid json body")
 		return types.ActionContinue
 	}
+
+	// Handle URI provider extraction
+	if uriProvider, ok := ctx.GetContext("uriProvider").(string); ok && uriProvider != "" {
+		modelValue := gjson.GetBytes(body, config.modelKey).String()
+		if modelValue == "" {
+			// TODO: Handle special protocols (Gemini, etc.) without model field
+			log.Debugf("URI provider extracted but no model field in body, skipping model modification")
+		} else {
+			// Check if model already has the provider prefix
+			if !strings.HasPrefix(modelValue, uriProvider+"/") {
+				modelValue = uriProvider + "/" + modelValue
+				log.Debugf("Applied URI provider prefix: %s", modelValue)
+
+				// Update model in body
+				newBody, err := sjson.SetBytes(body, config.modelKey, modelValue)
+				if err != nil {
+					log.Errorf("failed to update model with URI provider: %v", err)
+				} else {
+					_ = proxywasm.ReplaceHttpRequestBody(newBody)
+					body = newBody
+				}
+			}
+
+			// Set header for routing
+			if config.modelToHeader != "" {
+				_ = proxywasm.ReplaceHttpRequestHeader(config.modelToHeader, modelValue)
+			}
+		}
+	}
+
 	modelValue := gjson.GetBytes(body, config.modelKey).String()
 	if modelValue == "" {
 		return types.ActionContinue
@@ -307,6 +371,17 @@ func handleMultipartBody(ctx wrapper.HttpContext, config ModelRouterConfig, body
 		formName := part.FormName()
 		if formName == config.modelKey {
 			modelValue := string(partContent)
+
+			// Handle URI provider extraction
+			if uriProvider, ok := ctx.GetContext("uriProvider").(string); ok && uriProvider != "" {
+				if modelValue == "" {
+					// TODO: Handle special protocols (Gemini, etc.) without model field
+					log.Debugf("URI provider extracted but model field is empty, skipping model modification")
+				} else if !strings.HasPrefix(modelValue, uriProvider+"/") {
+					modelValue = uriProvider + "/" + modelValue
+					log.Debugf("Applied URI provider prefix: %s", modelValue)
+				}
+			}
 
 			if config.modelToHeader != "" {
 				_ = proxywasm.ReplaceHttpRequestHeader(config.modelToHeader, modelValue)
