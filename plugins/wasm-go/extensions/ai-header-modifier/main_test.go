@@ -1518,6 +1518,11 @@ func TestIsGeminiProtocol(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "valid gemini v1beta path",
+			path:     "/v1beta/models/gemini-3.1-pro-preview:generateContent?key=test",
+			expected: true,
+		},
+		{
 			name:     "non-gemini path",
 			path:     "/v1/chat/completions",
 			expected: false,
@@ -1568,6 +1573,11 @@ func TestExtractModelFromPath(t *testing.T) {
 			name:     "model with query parameters",
 			path:     "/v1/models/gemini-pro:generateContent?key=test",
 			expected: "gemini-pro",
+		},
+		{
+			name:     "v1beta model with query parameters",
+			path:     "/v1beta/models/gemini-3.1-pro-preview:generateContent?key=test",
+			expected: "gemini-3.1-pro-preview",
 		},
 		{
 			name:     "invalid path",
@@ -1674,5 +1684,56 @@ func TestGeminiProtocolAuthorizationHeader(t *testing.T) {
 
 		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
 		require.Equal(t, "ak_2XrUfEMUB1Uo3GNoxbK8YnS3sdqE2iN5x4C5wEdEgYk", xApiKeyHeader)
+	})
+}
+
+func TestGeminiProtocolV1BetaPath(t *testing.T) {
+	configData, _ := json.Marshal(map[string]interface{}{
+		"modelToHeader":      "x-higress-llm-model",
+		"addProviderHeader":  "x-request-llm-provider",
+		"defaultProvider":    "default",
+		"enableOnPathSuffix": []string{"*"},
+	})
+
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		requestBody := `{
+			"contents": [
+				{
+					"parts": [
+						{"text": "who are you"}
+					]
+				}
+			]
+		}`
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "test.com"},
+			{":path", "/v1beta/models/gemini-3.1-pro-preview:generateContent?key=ak_test_v1beta"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		modelHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-higress-llm-model")
+		require.Equal(t, "gemini-3.1-pro-preview", modelHeader)
+
+		apiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-mse-consumer-apikey")
+		require.Equal(t, "ak_test_v1beta", apiKeyHeader)
+
+		xApiKeyHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "x-api-key")
+		require.Equal(t, "ak_test_v1beta", xApiKeyHeader)
+
+		authHeader, _ := test.GetHeaderValue(host.GetRequestHeaders(), "Authorization")
+		require.Equal(t, "Bearer ak_test_v1beta", authHeader)
+
+		action = host.CallOnHttpRequestBody([]byte(requestBody))
+		require.Equal(t, types.ActionContinue, action)
+
+		body := string(host.GetRequestBody())
+		require.Contains(t, body, `"model":"gemini-3.1-pro-preview"`)
 	})
 }

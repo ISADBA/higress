@@ -108,3 +108,13 @@ Claude 的实现比 OpenAI 更简单：
 
 1. `plugins/wasm-go/extensions/ai-proxy/provider/provider.go` - 3 处修改
 2. `plugins/wasm-go/extensions/ai-proxy/provider/claude.go` - 2 处修改
+
+
+  配置示例
+
+  modelKey: model
+  modelToHeader: x-higress-llm-model
+  providers:
+    - official
+    - backup
+    - test

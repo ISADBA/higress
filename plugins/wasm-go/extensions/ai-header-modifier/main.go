@@ -735,15 +735,27 @@ func extractBoundary(contentType string) string {
 	return params["boundary"]
 }
 
-// isGeminiProtocol checks if the request path uses Gemini native protocol
-// Gemini protocol paths start with /v1/models/
+var geminiProtocolPrefixes = []string{
+	"/v1/models/",
+	"/v1beta/models/",
+}
+
+// isGeminiProtocol checks if the request path uses Gemini native protocol.
+// Gemini protocol paths start with one of the supported versioned prefixes.
 func isGeminiProtocol(path string) bool {
 	// Extract URI part (remove query parameters)
 	uri := path
 	if idx := strings.Index(path, "?"); idx != -1 {
 		uri = path[:idx]
 	}
-	return strings.HasPrefix(uri, "/v1/models/")
+
+	for _, prefix := range geminiProtocolPrefixes {
+		if strings.HasPrefix(uri, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Helper function to create multipart part header
@@ -753,8 +765,8 @@ func createPartHeader(formName string) textproto.MIMEHeader {
 	return h
 }
 
-// extractModelFromPath extracts the model name from Gemini protocol path
-// Path format: /v1/models/{model-name}:operation or /v1/models/{model-name}/operation
+// extractModelFromPath extracts the model name from Gemini protocol path.
+// Supported formats include /v1/models/{model}:operation and /v1beta/models/{model}:operation.
 func extractModelFromPath(path string) string {
 	// Remove query parameters
 	uri := path
@@ -762,14 +774,17 @@ func extractModelFromPath(path string) string {
 		uri = path[:idx]
 	}
 
-	// Path format: /v1/models/{model}:operation or /v1/models/{model}/operation
-	prefix := "/v1/models/"
-	if !strings.HasPrefix(uri, prefix) {
-		return ""
+	var modelPart string
+	for _, prefix := range geminiProtocolPrefixes {
+		if strings.HasPrefix(uri, prefix) {
+			modelPart = uri[len(prefix):]
+			break
+		}
 	}
 
-	// Extract model name part
-	modelPart := uri[len(prefix):]
+	if modelPart == "" {
+		return ""
+	}
 
 	// Find : or / as the end marker of model name
 	endIdx := len(modelPart)
