@@ -94,6 +94,21 @@ var completeOpenAIConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：OpenAI协议显式配置，禁用失败重试
+var openAIProtocolNoRetryConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"protocol":  "openai",
+			"apiTokens": []string{"sk-openai-provider-token"},
+			"retryOnFailure": map[string]interface{}{
+				"enabled": false,
+			},
+		},
+	})
+	return data
+}()
+
 func RunOpenAIParseConfigTests(t *testing.T) {
 	test.RunGoTest(t, func(t *testing.T) {
 		// 测试基本OpenAI配置解析
@@ -304,6 +319,37 @@ func RunOpenAIOnHttpRequestHeadersTests(t *testing.T) {
 			require.True(t, hasPath)
 			// 对于直接路径，应该保持原有路径
 			require.Contains(t, pathValue, "/v1/chat/completions", "Path should be preserved for direct custom path")
+		})
+
+		t.Run("openai protocol claude request strips client x-api-key", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIProtocolNoRetryConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "api.aportal.ai"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-api-key", "ak-client-secret"},
+				{"anthropic-version", "2023-06-01"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			require.NotNil(t, requestHeaders)
+
+			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
+			require.True(t, hasPath, "Path header should exist")
+			require.Equal(t, "/v1/chat/completions", pathValue, "Claude messages path should be converted to OpenAI chat completions")
+
+			authValue, hasAuth := test.GetHeaderValue(requestHeaders, "Authorization")
+			require.True(t, hasAuth, "Authorization header should exist")
+			require.Equal(t, "Bearer sk-openai-provider-token", authValue, "Authorization should use provider token")
+
+			_, hasXApiKey := test.GetHeaderValue(requestHeaders, "x-api-key")
+			require.False(t, hasXApiKey, "client x-api-key should not be sent to OpenAI provider")
 		})
 	})
 }

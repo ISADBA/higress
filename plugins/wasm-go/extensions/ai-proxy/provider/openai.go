@@ -200,6 +200,7 @@ func (m *openaiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	} else {
 		log.Warnf("[openaiProvider.TransformRequestHeaders] No auth token available - neither configured in apiTokens nor in request headers")
 	}
+	headers.Del("x-api-key")
 	headers.Del("Content-Length")
 }
 
