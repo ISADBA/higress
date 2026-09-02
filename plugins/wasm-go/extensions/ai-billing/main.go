@@ -32,6 +32,7 @@ const (
 	CtxKeyRequestDenied     = "ai-billing-request-denied"
 	CtxKeyStatusCode        = "ai-billing-status-code"
 	CtxKeyStreamDiagnostics = "ai-billing-stream-diagnostics"
+	CtxKeyFailedStreamBody  = "ai-billing-failed-stream-body"
 )
 
 func main() {}
@@ -49,13 +50,15 @@ func init() {
 
 // BillingConfig holds the plugin configuration
 type BillingConfig struct {
-	BillingService             BillingServiceConfig `yaml:"billingService"`
-	FailPricingMessage         string               `yaml:"failPricingMessage"`
-	FailBalanceMessage         string               `yaml:"failBalanceMessage"`
-	InsufficientBalanceMessage string               `yaml:"insufficientBalanceMessage"`
-	FailCostMessage            string               `yaml:"failCostMessage"`
-	billingClient              wrapper.HttpClient
-	pricingCache               map[string]bool // key: provider:model
+	BillingService                       BillingServiceConfig `yaml:"billingService"`
+	FailPricingMessage                   string               `yaml:"failPricingMessage"`
+	FailBalanceMessage                   string               `yaml:"failBalanceMessage"`
+	InsufficientBalanceMessage           string               `yaml:"insufficientBalanceMessage"`
+	FailCostMessage                      string               `yaml:"failCostMessage"`
+	DebugLogFailedStreamResponse         bool                 `yaml:"debugLogFailedStreamResponse"`
+	DebugLogFailedStreamResponseMaxBytes int                  `yaml:"debugLogFailedStreamResponseMaxBytes"`
+	billingClient                        wrapper.HttpClient
+	pricingCache                         map[string]bool // key: provider:model
 }
 
 // BillingServiceConfig holds the billing service connection details
@@ -167,9 +170,49 @@ type streamDiagnostics struct {
 	sawUsageMetadata          bool
 	sawResponseCompleted      bool
 	sawDone                   bool
+	sawInputTokens            bool
+	sawOutputTokens           bool
+	sawTotalTokens            bool
+	sawPromptTokens           bool
+	sawCompletionTokens       bool
 	lastCallbackBytes         int
 	lastCallbackHasUsage      bool
 	lastCallbackHasCompletion bool
+}
+
+type failedStreamBody struct {
+	data      []byte
+	truncated bool
+}
+
+func captureFailedStreamBody(ctx wrapper.HttpContext, config BillingConfig, data []byte) {
+	if !config.DebugLogFailedStreamResponse || len(data) == 0 {
+		return
+	}
+
+	body, _ := ctx.GetContext(CtxKeyFailedStreamBody).(*failedStreamBody)
+	if body == nil {
+		body = &failedStreamBody{}
+		ctx.SetContext(CtxKeyFailedStreamBody, body)
+	}
+	remaining := config.DebugLogFailedStreamResponseMaxBytes - len(body.data)
+	if remaining <= 0 {
+		body.truncated = true
+		return
+	}
+	if len(data) > remaining {
+		body.data = append(body.data, data[:remaining]...)
+		body.truncated = true
+		return
+	}
+	body.data = append(body.data, data...)
+}
+
+func getFailedStreamBody(ctx wrapper.HttpContext) failedStreamBody {
+	if body, ok := ctx.GetContext(CtxKeyFailedStreamBody).(*failedStreamBody); ok && body != nil {
+		return *body
+	}
+	return failedStreamBody{}
 }
 
 func observeStreamingChunk(diagnostics *streamDiagnostics, data []byte) {
@@ -182,6 +225,11 @@ func observeStreamingChunk(diagnostics *streamDiagnostics, data []byte) {
 	hasUsageMetadata := bytes.Contains(normalized, []byte(`"usageMetadata"`))
 	hasCompletion := bytes.Contains(normalized, []byte(`"response.completed"`))
 	hasDone := bytes.Contains(normalized, []byte("[DONE]"))
+	hasInputTokens := bytes.Contains(normalized, []byte("\"input_tokens\""))
+	hasOutputTokens := bytes.Contains(normalized, []byte("\"output_tokens\""))
+	hasTotalTokens := bytes.Contains(normalized, []byte("\"total_tokens\""))
+	hasPromptTokens := bytes.Contains(normalized, []byte("\"prompt_tokens\""))
+	hasCompletionTokens := bytes.Contains(normalized, []byte("\"completion_tokens\""))
 
 	// Use regular string literals for JSON field/event markers. They must not
 	// include a literal backslash before the quote.
@@ -205,6 +253,11 @@ func observeStreamingChunk(diagnostics *streamDiagnostics, data []byte) {
 	diagnostics.sawUsageMetadata = diagnostics.sawUsageMetadata || hasUsageMetadata
 	diagnostics.sawResponseCompleted = diagnostics.sawResponseCompleted || hasCompletion
 	diagnostics.sawDone = diagnostics.sawDone || hasDone
+	diagnostics.sawInputTokens = diagnostics.sawInputTokens || hasInputTokens
+	diagnostics.sawOutputTokens = diagnostics.sawOutputTokens || hasOutputTokens
+	diagnostics.sawTotalTokens = diagnostics.sawTotalTokens || hasTotalTokens
+	diagnostics.sawPromptTokens = diagnostics.sawPromptTokens || hasPromptTokens
+	diagnostics.sawCompletionTokens = diagnostics.sawCompletionTokens || hasCompletionTokens
 }
 
 func recordStreamingDiagnostics(ctx wrapper.HttpContext, data []byte) *streamDiagnostics {
@@ -304,6 +357,15 @@ func parseConfig(json gjson.Result, config *BillingConfig) error {
 	config.FailCostMessage = json.Get("failCostMessage").String()
 	if config.FailCostMessage == "" {
 		config.FailCostMessage = "503 Billing Service Cost Unavailable"
+	}
+
+	config.DebugLogFailedStreamResponse = json.Get("debugLogFailedStreamResponse").Bool()
+	if config.DebugLogFailedStreamResponse {
+		maxBytes := json.Get("debugLogFailedStreamResponseMaxBytes").Int()
+		if maxBytes <= 0 {
+			maxBytes = 1024 * 1024
+		}
+		config.DebugLogFailedStreamResponseMaxBytes = int(maxBytes)
 	}
 
 	// Initialize pricing cache
@@ -909,6 +971,7 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	// Track only safe structural information so failed usage extraction can be
 	// distinguished from missing usage and callback-level SSE fragmentation.
 	recordStreamingDiagnostics(ctx, data)
+	captureFailedStreamBody(ctx, config, data)
 
 	// Call GetTokenUsage on each chunk
 	usage := tokenusage.GetTokenUsage(ctx, data)
@@ -945,11 +1008,16 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	if !ok || billingInfo == nil {
 		diagnostics := getStreamingDiagnostics(ctx)
 		requestID := extractRequestID(ctx, data)
-		log.Errorf("[%s] failed to extract billing info from stream: requestId=%s provider=%s model=%s callbacks=%d totalBytes=%d usageCandidateCallbacks=%d completedWithUsage=%d completedWithoutUsage=%d sawUsage=%t sawUsageMetadata=%t sawResponseCompleted=%t sawDone=%t lastCallbackBytes=%d lastCallbackHasUsage=%t lastCallbackHasCompletion=%t",
+		log.Errorf("[%s] failed to extract billing info from stream: requestId=%s provider=%s model=%s callbacks=%d totalBytes=%d usageCandidateCallbacks=%d completedWithUsage=%d completedWithoutUsage=%d sawUsage=%t sawUsageMetadata=%t sawResponseCompleted=%t sawDone=%t sawInputTokens=%t sawOutputTokens=%t sawTotalTokens=%t sawPromptTokens=%t sawCompletionTokens=%t lastCallbackBytes=%d lastCallbackHasUsage=%t lastCallbackHasCompletion=%t",
 			pluginName, requestID, extractProvider(ctx), extractModel(ctx), diagnostics.callbackCount, diagnostics.totalBytes,
 			diagnostics.usageCandidateCallbacks, diagnostics.completedWithUsage, diagnostics.completedWithoutUsage, diagnostics.sawUsage, diagnostics.sawUsageMetadata,
-			diagnostics.sawResponseCompleted, diagnostics.sawDone, diagnostics.lastCallbackBytes,
+			diagnostics.sawResponseCompleted, diagnostics.sawDone, diagnostics.sawInputTokens, diagnostics.sawOutputTokens,
+			diagnostics.sawTotalTokens, diagnostics.sawPromptTokens, diagnostics.sawCompletionTokens, diagnostics.lastCallbackBytes,
 			diagnostics.lastCallbackHasUsage, diagnostics.lastCallbackHasCompletion)
+		if config.DebugLogFailedStreamResponse {
+			body := getFailedStreamBody(ctx)
+			log.Errorf("[%s] failed stream response body: requestId=%s capturedBytes=%d truncated=%t body=%s", pluginName, requestID, len(body.data), body.truncated, string(body.data))
+		}
 		// FAIL_CLOSE: Block response if we cannot extract billing information
 		// This is a critical error that indicates the response format is invalid
 		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information from stream")

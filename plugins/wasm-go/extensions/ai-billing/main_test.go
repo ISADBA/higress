@@ -1041,6 +1041,48 @@ func TestStreamingResponse(t *testing.T) {
 			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.05","cost_actual":"0.05","discount_ratio":"1.0","remaining_balance":"99.95"}`))
 		})
 
+		t.Run("responses api streaming completion with usage", func(t *testing.T) {
+			host, status := test.NewTestHost(validDefaultConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			headers := append([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"x-request-llm-provider", "openai"},
+				{"x-higress-llm-model", "gpt-5.6-sol"},
+			}, validTenantHeaders()...)
+
+			action := host.CallOnHttpRequestHeaders(headers)
+			require.Equal(t, types.ActionPause, action)
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"balance":"100.00","uid":12345,"updated_at":1234567890}`))
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			streamChunk := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-test-123\",\"model\":\"gpt-5.6-sol\",\"usage\":{\"input_tokens\":38199,\"output_tokens\":663,\"total_tokens\":38862}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(streamChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			callout := latestHttpCallout(t, host)
+			var bodyMap map[string]any
+			require.NoError(t, json.Unmarshal(callout.Body, &bodyMap))
+			require.EqualValues(t, 38199, bodyMap["input_tokens"])
+			require.EqualValues(t, 663, bodyMap["output_tokens"])
+
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.05","cost_actual":"0.05","discount_ratio":"1.0","remaining_balance":"99.95"}`))
+		})
+
 		t.Run("streaming without usage returns 500", func(t *testing.T) {
 			host, status := test.NewTestHost(validDefaultConfig)
 			defer host.Reset()
@@ -1100,11 +1142,31 @@ func TestStreamDiagnostics(t *testing.T) {
 	require.Equal(t, 0, diagnostics.completedWithUsage)
 	require.Equal(t, 1, diagnostics.completedWithoutUsage)
 	require.True(t, diagnostics.sawUsage)
+	require.True(t, diagnostics.sawInputTokens)
+	require.True(t, diagnostics.sawOutputTokens)
+	require.False(t, diagnostics.sawTotalTokens)
+	require.False(t, diagnostics.sawPromptTokens)
+	require.False(t, diagnostics.sawCompletionTokens)
 	require.True(t, diagnostics.sawResponseCompleted)
 	require.False(t, diagnostics.sawUsageMetadata)
 	require.False(t, diagnostics.sawDone)
 	require.True(t, diagnostics.lastCallbackHasUsage)
 	require.False(t, diagnostics.lastCallbackHasCompletion)
+}
+
+func TestFailedStreamBodyCapture(t *testing.T) {
+	buffer := &failedStreamBody{}
+	buffer.data = append(buffer.data, []byte("first")...)
+
+	remaining := 8 - len(buffer.data)
+	second := []byte("-second")
+	if len(second) > remaining {
+		buffer.data = append(buffer.data, second[:remaining]...)
+		buffer.truncated = true
+	}
+
+	require.Equal(t, "first-se", string(buffer.data))
+	require.True(t, buffer.truncated)
 }
 
 func TestCostRequestBodyMapping(t *testing.T) {
