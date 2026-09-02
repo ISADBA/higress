@@ -33,6 +33,7 @@ const (
 	CtxKeyStatusCode        = "ai-billing-status-code"
 	CtxKeyStreamDiagnostics = "ai-billing-stream-diagnostics"
 	CtxKeyFailedStreamBody  = "ai-billing-failed-stream-body"
+	CtxKeySSEBuffer         = "ai-billing-sse-buffer"
 )
 
 func main() {}
@@ -185,6 +186,13 @@ type failedStreamBody struct {
 	truncated bool
 }
 
+// streamSSEBuffer holds only the unfinished tail of an SSE event. Envoy may
+// split one SSE event across arbitrary streaming callbacks, including inside
+// response.usage. Passing those partial fragments to tokenusage loses usage.
+type streamSSEBuffer struct {
+	data []byte
+}
+
 func captureFailedStreamBody(ctx wrapper.HttpContext, config BillingConfig, data []byte) {
 	if !config.DebugLogFailedStreamResponse || len(data) == 0 {
 		return
@@ -213,6 +221,37 @@ func getFailedStreamBody(ctx wrapper.HttpContext) failedStreamBody {
 		return *body
 	}
 	return failedStreamBody{}
+}
+
+// consumeCompleteSSEFrames reassembles SSE events before token extraction.
+// A complete event ends with a blank line. At EOS, retain a final event even
+// when a non-conforming upstream omitted the final blank line.
+func consumeCompleteSSEFrames(ctx wrapper.HttpContext, data []byte, endOfStream bool) [][]byte {
+	buffer, _ := ctx.GetContext(CtxKeySSEBuffer).(*streamSSEBuffer)
+	if buffer == nil {
+		buffer = &streamSSEBuffer{}
+		ctx.SetContext(CtxKeySSEBuffer, buffer)
+	}
+
+	buffer.data = append(buffer.data, data...)
+	buffer.data = wrapper.UnifySSEChunk(buffer.data)
+
+	frames := make([][]byte, 0)
+	for {
+		separator := bytes.Index(buffer.data, []byte("\n\n"))
+		if separator < 0 {
+			break
+		}
+		frames = append(frames, append([]byte(nil), buffer.data[:separator+2]...))
+		buffer.data = append(buffer.data[:0], buffer.data[separator+2:]...)
+	}
+
+	if endOfStream && len(bytes.TrimSpace(buffer.data)) > 0 {
+		frames = append(frames, append([]byte(nil), buffer.data...))
+		buffer.data = nil
+	}
+
+	return frames
 }
 
 func observeStreamingChunk(diagnostics *streamDiagnostics, data []byte) {
@@ -973,9 +1012,14 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	recordStreamingDiagnostics(ctx, data)
 	captureFailedStreamBody(ctx, config, data)
 
-	// Call GetTokenUsage on each chunk
-	usage := tokenusage.GetTokenUsage(ctx, data)
-	if usage.TotalToken > 0 {
+	// Envoy callback boundaries are unrelated to SSE event boundaries. Parse
+	// only complete frames so response.completed usage cannot be split away.
+	for _, frame := range consumeCompleteSSEFrames(ctx, data, endOfStream) {
+		usage := tokenusage.GetTokenUsage(ctx, frame)
+		if usage.TotalToken == 0 {
+			continue
+		}
+
 		billingUsage := buildBillingTokenUsage(usage)
 		log.Debugf("[%s] extracted token usage from stream: inputTokens=%d outputTokens=%d cacheReadTokens=%d cacheWriteTokens=%d",
 			pluginName, billingUsage.InputTokens, billingUsage.OutputTokens, billingUsage.CacheReadTokens, billingUsage.CacheWriteTokens)

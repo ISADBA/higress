@@ -1083,6 +1083,46 @@ func TestStreamingResponse(t *testing.T) {
 			}, []byte(`{"success":true,"billing_event_id":12345,"cost":"0.05","cost_actual":"0.05","discount_ratio":"1.0","remaining_balance":"99.95"}`))
 		})
 
+		t.Run("responses api usage split across streaming callbacks", func(t *testing.T) {
+			host, status := test.NewTestHost(validDefaultConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			headers := append([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"x-request-llm-provider", "openai"},
+				{"x-higress-llm-model", "gpt-5.6-sol"},
+			}, validTenantHeaders()...)
+
+			action := host.CallOnHttpRequestHeaders(headers)
+			require.Equal(t, types.ActionPause, action)
+			host.CallOnHttpCall([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			}, []byte(`{"success":true,"balance":"100.00","uid":12345,"updated_at":1234567890}`))
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			first := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-split\",\"usage\":{\"input_tokens\":38199,")
+			second := []byte("\"output_tokens\":663,\"total_tokens\":38862}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(first, false)
+			require.Equal(t, types.ActionContinue, action)
+			action = host.CallOnHttpStreamingResponseBody(second, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			callout := latestHttpCallout(t, host)
+			var bodyMap map[string]any
+			require.NoError(t, json.Unmarshal(callout.Body, &bodyMap))
+			require.EqualValues(t, 38199, bodyMap["input_tokens"])
+			require.EqualValues(t, 663, bodyMap["output_tokens"])
+		})
+
 		t.Run("streaming without usage returns 500", func(t *testing.T) {
 			host, status := test.NewTestHost(validDefaultConfig)
 			defer host.Reset()
