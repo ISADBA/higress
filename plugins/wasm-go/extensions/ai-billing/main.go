@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,14 +23,15 @@ const (
 
 // Context keys for storing data across request lifecycle
 const (
-	CtxKeyTenantInfo     = "ai-billing-tenant-info"
-	CtxKeyApiKey         = "ai-billing-api-key" // Optional, for debug logging only
-	CtxKeyConsumerApiKey = "ai-billing-consumer-apikey"
-	CtxKeyApikeyID       = "ai-billing-apikey-id"
-	CtxKeyBillingInfo    = "ai-billing-info"
-	CtxKeyIsStreaming    = "ai-billing-is-streaming"
-	CtxKeyRequestDenied  = "ai-billing-request-denied"
-	CtxKeyStatusCode     = "ai-billing-status-code"
+	CtxKeyTenantInfo        = "ai-billing-tenant-info"
+	CtxKeyApiKey            = "ai-billing-api-key" // Optional, for debug logging only
+	CtxKeyConsumerApiKey    = "ai-billing-consumer-apikey"
+	CtxKeyApikeyID          = "ai-billing-apikey-id"
+	CtxKeyBillingInfo       = "ai-billing-info"
+	CtxKeyIsStreaming       = "ai-billing-is-streaming"
+	CtxKeyRequestDenied     = "ai-billing-request-denied"
+	CtxKeyStatusCode        = "ai-billing-status-code"
+	CtxKeyStreamDiagnostics = "ai-billing-stream-diagnostics"
 )
 
 func main() {}
@@ -151,6 +153,75 @@ type BillingTokenUsage struct {
 	CacheWriteTokens      int64
 	RawInputTokenDetails  map[string]int64
 	RawOutputTokenDetails map[string]int64
+}
+
+// streamDiagnostics stores only structural SSE metadata. Response text is
+// deliberately not retained or logged because it can contain sensitive data.
+type streamDiagnostics struct {
+	callbackCount             int
+	totalBytes                int
+	usageCandidateCallbacks   int
+	completedWithUsage        int
+	completedWithoutUsage     int
+	sawUsage                  bool
+	sawUsageMetadata          bool
+	sawResponseCompleted      bool
+	sawDone                   bool
+	lastCallbackBytes         int
+	lastCallbackHasUsage      bool
+	lastCallbackHasCompletion bool
+}
+
+func observeStreamingChunk(diagnostics *streamDiagnostics, data []byte) {
+	diagnostics.callbackCount++
+	diagnostics.totalBytes += len(data)
+	diagnostics.lastCallbackBytes = len(data)
+
+	normalized := wrapper.UnifySSEChunk(data)
+	hasUsage := bytes.Contains(normalized, []byte(`"usage"`))
+	hasUsageMetadata := bytes.Contains(normalized, []byte(`"usageMetadata"`))
+	hasCompletion := bytes.Contains(normalized, []byte(`"response.completed"`))
+	hasDone := bytes.Contains(normalized, []byte("[DONE]"))
+
+	// Use regular string literals for JSON field/event markers. They must not
+	// include a literal backslash before the quote.
+	hasUsage = bytes.Contains(normalized, []byte("\"usage\""))
+	hasUsageMetadata = bytes.Contains(normalized, []byte("\"usageMetadata\""))
+	hasCompletion = bytes.Contains(normalized, []byte("\"response.completed\""))
+
+	diagnostics.lastCallbackHasUsage = hasUsage || hasUsageMetadata
+	diagnostics.lastCallbackHasCompletion = hasCompletion
+	if diagnostics.lastCallbackHasUsage {
+		diagnostics.usageCandidateCallbacks++
+	}
+	if hasCompletion {
+		if diagnostics.lastCallbackHasUsage {
+			diagnostics.completedWithUsage++
+		} else {
+			diagnostics.completedWithoutUsage++
+		}
+	}
+	diagnostics.sawUsage = diagnostics.sawUsage || hasUsage
+	diagnostics.sawUsageMetadata = diagnostics.sawUsageMetadata || hasUsageMetadata
+	diagnostics.sawResponseCompleted = diagnostics.sawResponseCompleted || hasCompletion
+	diagnostics.sawDone = diagnostics.sawDone || hasDone
+}
+
+func recordStreamingDiagnostics(ctx wrapper.HttpContext, data []byte) *streamDiagnostics {
+	diagnostics, _ := ctx.GetContext(CtxKeyStreamDiagnostics).(*streamDiagnostics)
+	if diagnostics == nil {
+		diagnostics = &streamDiagnostics{}
+		ctx.SetContext(CtxKeyStreamDiagnostics, diagnostics)
+	}
+	observeStreamingChunk(diagnostics, data)
+	return diagnostics
+}
+
+func getStreamingDiagnostics(ctx wrapper.HttpContext) streamDiagnostics {
+	if diagnostics, ok := ctx.GetContext(CtxKeyStreamDiagnostics).(*streamDiagnostics); ok && diagnostics != nil {
+		return *diagnostics
+	}
+	return streamDiagnostics{}
 }
 
 func buildBillingTokenUsage(usage tokenusage.TokenUsage) BillingTokenUsage {
@@ -835,6 +906,10 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 		return data
 	}
 
+	// Track only safe structural information so failed usage extraction can be
+	// distinguished from missing usage and callback-level SSE fragmentation.
+	recordStreamingDiagnostics(ctx, data)
+
 	// Call GetTokenUsage on each chunk
 	usage := tokenusage.GetTokenUsage(ctx, data)
 	if usage.TotalToken > 0 {
@@ -868,7 +943,13 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config BillingConfig, 
 	// At end of stream, deduct cost if we have billing info
 	billingInfo, ok := ctx.GetContext(CtxKeyBillingInfo).(*BillingInfo)
 	if !ok || billingInfo == nil {
-		log.Errorf("[%s] failed to extract billing info from stream", pluginName)
+		diagnostics := getStreamingDiagnostics(ctx)
+		requestID := extractRequestID(ctx, data)
+		log.Errorf("[%s] failed to extract billing info from stream: requestId=%s provider=%s model=%s callbacks=%d totalBytes=%d usageCandidateCallbacks=%d completedWithUsage=%d completedWithoutUsage=%d sawUsage=%t sawUsageMetadata=%t sawResponseCompleted=%t sawDone=%t lastCallbackBytes=%d lastCallbackHasUsage=%t lastCallbackHasCompletion=%t",
+			pluginName, requestID, extractProvider(ctx), extractModel(ctx), diagnostics.callbackCount, diagnostics.totalBytes,
+			diagnostics.usageCandidateCallbacks, diagnostics.completedWithUsage, diagnostics.completedWithoutUsage, diagnostics.sawUsage, diagnostics.sawUsageMetadata,
+			diagnostics.sawResponseCompleted, diagnostics.sawDone, diagnostics.lastCallbackBytes,
+			diagnostics.lastCallbackHasUsage, diagnostics.lastCallbackHasCompletion)
 		// FAIL_CLOSE: Block response if we cannot extract billing information
 		// This is a critical error that indicates the response format is invalid
 		sendErrorResponse(http.StatusInternalServerError, "Failed to extract billing information from stream")

@@ -1084,6 +1084,29 @@ func TestStreamingResponse(t *testing.T) {
 	})
 }
 
+func TestStreamDiagnostics(t *testing.T) {
+	diagnostics := &streamDiagnostics{}
+	firstChunk := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{")
+	secondChunk := []byte("\"usage\":{\"input_tokens\":38199,\"output_tokens\":663}}}\n\n")
+
+	// A Responses API terminal event can be split across proxy callbacks. The
+	// diagnostic must preserve that shape without retaining response content.
+	observeStreamingChunk(diagnostics, firstChunk)
+	observeStreamingChunk(diagnostics, secondChunk)
+
+	require.Equal(t, 2, diagnostics.callbackCount)
+	require.Equal(t, len(firstChunk)+len(secondChunk), diagnostics.totalBytes)
+	require.Equal(t, 1, diagnostics.usageCandidateCallbacks)
+	require.Equal(t, 0, diagnostics.completedWithUsage)
+	require.Equal(t, 1, diagnostics.completedWithoutUsage)
+	require.True(t, diagnostics.sawUsage)
+	require.True(t, diagnostics.sawResponseCompleted)
+	require.False(t, diagnostics.sawUsageMetadata)
+	require.False(t, diagnostics.sawDone)
+	require.True(t, diagnostics.lastCallbackHasUsage)
+	require.False(t, diagnostics.lastCallbackHasCompletion)
+}
+
 func TestCostRequestBodyMapping(t *testing.T) {
 	test.RunTest(t, func(t *testing.T) {
 		t.Run("claude cache usage is forwarded to cost request", func(t *testing.T) {
